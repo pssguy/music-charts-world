@@ -1,0 +1,747 @@
+---
+title: "World Music Watch"
+subtitle: "Weekly cartography of the global Spotify charts"
+author: "chai publications"
+date: today
+format:
+  html:
+    toc: false
+    page-layout: full
+    css: world-music-watch.css
+    embed-resources: false
+    code-tools: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{=html}
+<style>
+.selected-flag {
+  font-size: 2rem;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.queue-btn {
+  background: #5a2616;
+  color: #faf6ef;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.queue-btn:hover {
+  background: #c97a4f;
+}
+.queue-btn.stop {
+  background: #8b3a2a;
+}
+.queue-btn.stop:hover {
+  background: #b04a30;
+}
+.queue-indicator {
+  font-size: 0.8rem;
+  color: #c97a4f;
+  font-weight: 600;
+  margin-left: 6px;
+}
+</style>
+```
+
+```{r setup}
+#| include: false
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(plotly)
+library(htmltools)
+library(htmlwidgets)
+library(lubridate)
+
+source("R/fetch_charts.R")
+
+# All countries; the scraper handles 404s/empty pages gracefully.
+country_codes <- WORLD_MUSIC_WATCH_COUNTRIES
+
+# Convert ISO-2 country code to flag emoji via regional indicator symbols.
+flag_emoji <- function(codes) {
+  vapply(codes, function(code) {
+    if (is.na(code) || code == "GLOBAL") return("\U0001F30D")
+    pts <- utf8ToInt(toupper(code)) - utf8ToInt("A") + 0x1F1E6
+    if (any(pts < 0x1F1E6) || any(pts > 0x1F1FF)) return("")
+    intToUtf8(pts)
+  }, character(1))
+}
+
+# Render a position-change cell from kworb's "P+" text
+render_change <- function(ch) {
+  if (is.na(ch) || ch == "") return('<span class="track-change blank"></span>')
+  if (ch == "=")   return('<span class="track-change same">&mdash;</span>')
+  if (ch == "NEW") return('<span class="track-change new">NEW</span>')
+  if (ch == "RE")  return('<span class="track-change re">RE</span>')
+  if (substr(ch, 1, 1) == "+") return(sprintf('<span class="track-change up">&uarr;%s</span>', substring(ch, 2)))
+  if (substr(ch, 1, 1) == "-") return(sprintf('<span class="track-change down">&darr;%s</span>', substring(ch, 2)))
+  sprintf('<span class="track-change">%s</span>', htmlEscape(ch))
+}
+```
+
+```{r fetch}
+#| include: false
+
+cache_dir    <- "data"
+cache_week   <- format(floor_date(Sys.Date(), "week", week_start = 5), "%Y-%m-%d")
+cache_file   <- file.path(cache_dir, paste0("charts_", cache_week, ".rds"))
+cache_global <- file.path(cache_dir, paste0("global_", cache_week, ".rds"))
+dir.create(cache_dir, showWarnings = FALSE)
+
+if (file.exists(cache_file)) {
+  charts <- readRDS(cache_file)
+} else {
+  charts <- fetch_all_countries(country_codes, top_n = 50)
+  saveRDS(charts, cache_file)
+}
+
+if (file.exists(cache_global)) {
+  charts_global <- readRDS(cache_global)
+} else {
+  charts_global <- fetch_kworb_country("global", top_n = 50)
+  saveRDS(charts_global, cache_global)
+}
+
+if (!"change" %in% names(charts))        charts$change        <- NA_character_
+if (!"change" %in% names(charts_global)) charts_global$change <- NA_character_
+
+stopifnot(nrow(charts) > 100, nrow(charts_global) >= 40)
+```
+
+```{r metrics}
+#| include: false
+
+country_info <- tibble::tribble(
+  ~country_code, ~iso3,  ~country,                ~language,
+  "US", "USA",  "United States",         "en",   "GB", "GBR",  "United Kingdom",        "en",
+  "CA", "CAN",  "Canada",                "en",   "AU", "AUS",  "Australia",             "en",
+  "IE", "IRL",  "Ireland",               "en",   "NZ", "NZL",  "New Zealand",           "en",
+  "BR", "BRA",  "Brazil",                "pt",   "PT", "PRT",  "Portugal",              "pt",
+  "MX", "MEX",  "Mexico",                "es",   "AR", "ARG",  "Argentina",             "es",
+  "CO", "COL",  "Colombia",              "es",   "ES", "ESP",  "Spain",                 "es",
+  "CL", "CHL",  "Chile",                 "es",   "PE", "PER",  "Peru",                  "es",
+  "EC", "ECU",  "Ecuador",               "es",   "UY", "URY",  "Uruguay",               "es",
+  "PY", "PRY",  "Paraguay",              "es",   "BO", "BOL",  "Bolivia",               "es",
+  "DO", "DOM",  "Dominican Republic",    "es",   "GT", "GTM",  "Guatemala",             "es",
+  "CR", "CRI",  "Costa Rica",            "es",
+  "DE", "DEU",  "Germany",               "de",   "AT", "AUT",  "Austria",               "de",
+  "CH", "CHE",  "Switzerland",           "de",   "FR", "FRA",  "France",                "fr",
+  "BE", "BEL",  "Belgium",               "fr",   "IT", "ITA",  "Italy",                 "it",
+  "NL", "NLD",  "Netherlands",           "nl",   "SE", "SWE",  "Sweden",                "sv",
+  "NO", "NOR",  "Norway",                "no",   "DK", "DNK",  "Denmark",               "da",
+  "FI", "FIN",  "Finland",               "fi",   "PL", "POL",  "Poland",                "pl",
+  "CZ", "CZE",  "Czechia",               "cs",   "HU", "HUN",  "Hungary",               "hu",
+  "RO", "ROU",  "Romania",               "ro",   "TR", "TUR",  "Turkey",                "tr",
+  "GR", "GRC",  "Greece",                "el",   "JP", "JPN",  "Japan",                 "ja",
+  "KR", "KOR",  "South Korea",           "ko",   "TW", "TWN",  "Taiwan",                "zh",
+  "HK", "HKG",  "Hong Kong",             "zh",   "ID", "IDN",  "Indonesia",             "id",
+  "PH", "PHL",  "Philippines",           "fil",  "TH", "THA",  "Thailand",              "th",
+  "VN", "VNM",  "Vietnam",               "vi",   "MY", "MYS",  "Malaysia",              "ms",
+  "SG", "SGP",  "Singapore",             "en",   "IN", "IND",  "India",                 "hi",
+  "ZA", "ZAF",  "South Africa",          "en",   "NG", "NGA",  "Nigeria",               "en",
+  "AE", "ARE",  "United Arab Emirates",  "ar",   "SA", "SAU",  "Saudi Arabia",          "ar",
+  "EG", "EGY",  "Egypt",                 "ar",   "IL", "ISR",  "Israel",                "he"
+)
+
+n_countries_tracked <- n_distinct(charts$country_code)
+
+charts <- charts |> left_join(country_info, by = "country_code")
+
+# --- distinctiveness via Jaccard distance over track IDs --------------------
+by_country <- split(charts$track_id, charts$country_code)
+
+jaccard_dist <- function(a, b) {
+  a <- unique(a); b <- unique(b)
+  if (length(a) == 0 || length(b) == 0) return(1)
+  1 - length(intersect(a, b)) / length(union(a, b))
+}
+
+cc <- names(by_country)
+n  <- length(cc)
+dist_mat <- matrix(0, n, n, dimnames = list(cc, cc))
+for (i in seq_len(n)) for (j in seq_len(n)) if (i < j) {
+  d <- jaccard_dist(by_country[[i]], by_country[[j]])
+  dist_mat[i, j] <- dist_mat[j, i] <- d
+}
+
+distinctiveness <- rowMeans(dist_mat)
+
+track_country_count <- charts |> count(track_id, name = "n_countries")
+unique_to_one  <- track_country_count |> filter(n_countries == 1) |> pull(track_id)
+
+stats <- tibble(
+  country_code = cc,
+  distinctiveness = distinctiveness
+) |>
+  left_join(country_info, by = "country_code") |>
+  arrange(desc(distinctiveness))
+
+# Hierarchical clustering for the heatmap
+hc <- hclust(as.dist(dist_mat), method = "average")
+order_idx <- hc$order
+cc_ordered <- cc[order_idx]
+labels_ordered <- country_info$country[match(cc_ordered, country_info$country_code)]
+
+sim_mat <- 1 - dist_mat[order_idx, order_idx]
+diag(sim_mat) <- NA_real_
+```
+
+::: {.kicker}
+World Music Watch · Week of `r format(floor_date(Sys.Date(), "week", week_start = 5), "%d %B %Y")`
+:::
+
+# What the world is listening to, [and where it disagrees.]{.italic-rust}
+
+::: {.standfirst}
+A weekly cartography of the global Spotify charts: which countries hold the most distinctive listening habits, which fall in line with the international consensus, and the songs that go straight to the top in one country and nowhere else.
+:::
+
+::: {.panel-tabset}
+
+## The charts
+
+::: {.section-intro}
+Click any country on the map &mdash; or pick from the dropdown &mdash; to see its top 50. Click any track row to play it. Use **Play All** to listen through the full chart in order, or **Shuffle** to randomise. *Not all countries are shown: chart data is only available for the `r n_countries_tracked` markets where our source publishes weekly rankings.*
+:::
+
+```{r world-map}
+plot_ly(
+  type = "choropleth",
+  locations    = stats$iso3,
+  z            = stats$distinctiveness,
+  locationmode = "ISO-3",
+  customdata   = stats$country_code,
+  text         = stats$country,
+  hovertemplate = "<b>%{text}</b><br>Distinctiveness: %{z:.3f}<br><i>click to view chart</i><extra></extra>",
+  colorscale   = list(c(0, "#f5e8d6"), c(0.5, "#c97a4f"), c(1, "#5a2616")),
+  marker       = list(line = list(color = "#1a1410", width = 0.4)),
+  colorbar     = list(title = list(text = "Distinctiveness", font = list(size = 11)),
+                      thickness = 8, len = 0.5, tickformat = ".2f")
+) |>
+  layout(
+    geo = list(showframe = FALSE, showcoastlines = FALSE,
+               projection = list(type = "natural earth"),
+               bgcolor = "#faf6ef", landcolor = "#ece5d8"),
+    paper_bgcolor = "#faf6ef",
+    margin = list(l = 0, r = 0, t = 8, b = 0),
+    height = 480
+  ) |>
+  config(displayModeBar = FALSE) |>
+  onRender("
+    function(el, x) {
+      el.on('plotly_click', function(data) {
+        var code = data.points[0].customdata;
+        if (!code) return;
+        if (typeof showCountryPanel === 'function') showCountryPanel(code);
+        var sel = document.getElementById('country-select');
+        if (sel) sel.value = code;
+        var bar = document.querySelector('.now-playing-bar');
+        if (bar) bar.scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
+    }
+  ")
+```
+
+```{r charts-panels}
+#| results: asis
+
+selectable <- country_info |>
+  filter(country_code %in% unique(charts$country_code)) |>
+  arrange(country)
+
+# --- Build the countryDefaults JS object (for player initialisation) -------
+build_default <- function(cc, name, df) {
+  list(cc = cc, name = name,
+       trackId = df$track_id[1],
+       title   = df$title[1],
+       artist  = df$artist[1],
+       flag    = flag_emoji(cc))
+}
+
+defaults <- list(build_default("GLOBAL", "Worldwide", charts_global))
+for (i in seq_len(nrow(selectable))) {
+  cc_i <- selectable$country_code[i]
+  panel_data <- charts |> filter(country_code == cc_i) |> arrange(rank)
+  if (nrow(panel_data) > 0) {
+    defaults[[length(defaults) + 1]] <-
+      build_default(cc_i, selectable$country[i], panel_data)
+  }
+}
+
+esc_js <- function(s) {
+  s <- gsub("\\\\", "\\\\\\\\", s)
+  gsub('"', '\\\\"', s)
+}
+
+# --- Define handlers + countryDefaults BEFORE loading the iframe API -------
+cat('<script>\n')
+cat('const countryDefaults = {\n')
+for (d in defaults) {
+  cat(sprintf('  "%s": {trackId: "%s", name: "%s", title: "%s", artist: "%s", flag: "%s"},\n',
+              d$cc, d$trackId,
+              esc_js(d$name), esc_js(d$title), esc_js(d$artist), d$flag))
+}
+cat('};\n')
+
+# Build trackQueues: mapping panel code to array of {trackId, title, artist}
+cat('const trackQueues = {\n')
+# Global queue
+cat('  "GLOBAL": [\n')
+for (i in seq_len(nrow(charts_global))) {
+  cat(sprintf('    {trackId: "%s", title: "%s", artist: "%s"},\n',
+              charts_global$track_id[i],
+              esc_js(charts_global$title[i]),
+              esc_js(charts_global$artist[i])))
+}
+cat('  ],\n')
+# Country queues
+for (i in seq_len(nrow(selectable))) {
+  cc_i <- selectable$country_code[i]
+  panel_data <- charts |> filter(country_code == cc_i) |> arrange(rank)
+  if (nrow(panel_data) > 0) {
+    cat(sprintf('  "%s": [\n', cc_i))
+    for (j in seq_len(nrow(panel_data))) {
+      cat(sprintf('    {trackId: "%s", title: "%s", artist: "%s"},\n',
+                  panel_data$track_id[j],
+                  esc_js(panel_data$title[j]),
+                  esc_js(panel_data$artist[j])))
+    }
+    cat('  ],\n')
+  }
+}
+cat('};\n')
+
+cat('
+let spotifyController = null;
+let pendingPlayId = null;
+let currentPanelCode = "GLOBAL";
+
+// --- Queue state ---
+let queueActive = false;
+let queueOrder = [];
+let queuePosition = -1;
+let pollInterval = null;
+let lastUpdateTime = 0;      // Date.now() of last playback_update
+let lastKnownPos = 0;
+let trackHasPlayed = false;   // true once we see pos > 0
+let advancing = false;        // guard against double-advance
+
+window.onSpotifyIframeApiReady = (IFrameAPI) => {
+  const container = document.getElementById("spotify-player-container");
+  if (!container) return;
+  IFrameAPI.createController(container, {
+    width: "100%",
+    height: 80,
+    uri: "spotify:track:" + countryDefaults.GLOBAL.trackId
+  }, (ctrl) => {
+    spotifyController = ctrl;
+
+    // playback_update: just record state, the poll loop does decisions
+    spotifyController.addListener("playback_update", (data) => {
+      lastUpdateTime = Date.now();
+      const pos = data.position || 0;
+      if (!data.isPaused && pos > 0) {
+        trackHasPlayed = true;
+        lastKnownPos = pos;
+      }
+    });
+
+    if (pendingPlayId) {
+      spotifyController.loadUri("spotify:track:" + pendingPlayId);
+      spotifyController.play();
+      pendingPlayId = null;
+    }
+  });
+};
+
+// --- Poll loop: checks every second whether the track has ended ---
+function startPoll() {
+  stopPoll();
+  pollInterval = setInterval(() => {
+    if (!queueActive || advancing) return;
+    const now = Date.now();
+    const silenceMs = now - lastUpdateTime;
+    // If the track played and then updates stopped for 3+ seconds,
+    // the preview/track ended. Advance.
+    if (trackHasPlayed && lastUpdateTime > 0 && silenceMs > 3000) {
+      advancing = true;
+      advanceQueue();
+    }
+  }, 1000);
+}
+
+function stopPoll() {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+}
+
+function showCountryPanel(code) {
+  stopQueue();
+  currentPanelCode = code;
+  document.querySelectorAll(".country-panel").forEach(p => {
+    p.style.display = (p.id === "panel-" + code) ? "block" : "none";
+  });
+  const def = countryDefaults[code];
+  if (def && spotifyController) {
+    spotifyController.loadUri("spotify:track:" + def.trackId);
+  }
+  const flagEl = document.getElementById("selected-flag");
+  if (flagEl && def) flagEl.textContent = def.flag;
+  const panel = document.getElementById("panel-" + code);
+  if (panel) {
+    panel.querySelectorAll(".track-row").forEach(r => r.classList.remove("selected"));
+    const first = panel.querySelector(".track-row");
+    if (first) first.classList.add("selected");
+  }
+  const sel = document.getElementById("country-select");
+  if (sel) sel.value = code;
+}
+
+function playTrack(panelCode, trackId, rank, rowEl) {
+  stopQueue();
+  if (spotifyController) {
+    spotifyController.loadUri("spotify:track:" + trackId);
+    spotifyController.play();
+  } else {
+    pendingPlayId = trackId;
+  }
+  const panel = document.getElementById("panel-" + panelCode);
+  if (panel) {
+    panel.querySelectorAll(".track-row").forEach(r => r.classList.remove("selected"));
+  }
+  if (rowEl) rowEl.classList.add("selected");
+}
+
+// --- Play All / Shuffle ---
+function startQueue(shuffle) {
+  const queue = trackQueues[currentPanelCode];
+  if (!queue || queue.length === 0 || !spotifyController) return;
+  queueOrder = Array.from({length: queue.length}, (_, i) => i);
+  if (shuffle) {
+    for (let i = queueOrder.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [queueOrder[i], queueOrder[j]] = [queueOrder[j], queueOrder[i]];
+    }
+  }
+  queuePosition = 0;
+  queueActive = true;
+  advancing = false;
+  startPoll();
+  updateQueueUI();
+  playQueueTrack();
+}
+
+function playQueueTrack() {
+  const queue = trackQueues[currentPanelCode];
+  if (!queue || queuePosition < 0 || queuePosition >= queueOrder.length) {
+    stopQueue();
+    return;
+  }
+  const idx = queueOrder[queuePosition];
+  const track = queue[idx];
+  // Reset tracking for the new track
+  trackHasPlayed = false;
+  lastKnownPos = 0;
+  lastUpdateTime = Date.now();  // give it time to start
+  advancing = false;
+  spotifyController.loadUri("spotify:track:" + track.trackId);
+  spotifyController.play();
+  // Highlight the row
+  const panel = document.getElementById("panel-" + currentPanelCode);
+  if (panel) {
+    const rows = panel.querySelectorAll(".track-row");
+    rows.forEach(r => r.classList.remove("selected"));
+    if (rows[idx]) {
+      rows[idx].classList.add("selected");
+      rows[idx].scrollIntoView({behavior: "smooth", block: "nearest"});
+    }
+  }
+  updateQueueUI();
+}
+
+function advanceQueue() {
+  if (!queueActive) return;
+  queuePosition++;
+  if (queuePosition >= queueOrder.length) {
+    stopQueue();
+    return;
+  }
+  playQueueTrack();
+}
+
+function skipQueue() {
+  if (queueActive) {
+    advancing = true;
+    advanceQueue();
+  }
+}
+
+function stopQueue() {
+  queueActive = false;
+  queuePosition = -1;
+  queueOrder = [];
+  trackHasPlayed = false;
+  lastKnownPos = 0;
+  advancing = false;
+  stopPoll();
+  updateQueueUI();
+}
+
+function updateQueueUI() {
+  const indicator = document.getElementById("queue-indicator");
+  if (!indicator) return;
+  if (queueActive) {
+    const queue = trackQueues[currentPanelCode];
+    const total = queueOrder.length;
+    indicator.textContent = "Track " + (queuePosition + 1) + " of " + total;
+    indicator.style.display = "inline";
+  } else {
+    indicator.style.display = "none";
+  }
+  const stopBtn = document.getElementById("queue-stop-btn");
+  const skipBtn = document.getElementById("queue-skip-btn");
+  if (stopBtn) stopBtn.style.display = queueActive ? "inline-block" : "none";
+  if (skipBtn) skipBtn.style.display = queueActive ? "inline-block" : "none";
+}
+')
+cat('</script>\n')
+
+# --- Sticky control bar: flag + dropdown + playback controls + player ------
+cat('<div class="now-playing-bar"><div class="np-row">')
+
+cat('<div class="country-selector-wrap">')
+cat('<span id="selected-flag" class="selected-flag">\U0001F30D</span>')
+cat('<label for="country-select">Showing chart for:</label>')
+cat('<select id="country-select" onchange="showCountryPanel(this.value)">')
+cat('<option value="GLOBAL">&mdash; Worldwide &mdash;</option>')
+for (i in seq_len(nrow(selectable))) {
+  cat(sprintf('<option value="%s">%s</option>',
+              selectable$country_code[i],
+              htmlEscape(selectable$country[i])))
+}
+cat('</select>')
+cat('</div>')
+
+cat('<div class="playback-controls">')
+cat('<button class="queue-btn" onclick="startQueue(false)" title="Play all tracks 1\u201350">&#9654; Play All</button>')
+cat('<button class="queue-btn" onclick="startQueue(true)" title="Shuffle all tracks">&#128256; Shuffle</button>')
+cat('<button class="queue-btn" id="queue-skip-btn" onclick="skipQueue()" title="Next track" style="display:none;">&#9197; Next</button>')
+cat('<button class="queue-btn stop" id="queue-stop-btn" onclick="stopQueue()" title="Stop queue" style="display:none;">&#9632; Stop</button>')
+cat('<span id="queue-indicator" class="queue-indicator" style="display:none;"></span>')
+cat('</div>')
+
+cat('<div id="spotify-player-container"></div>')
+
+cat('</div></div>')
+
+# --- Render all chart panels (track lists only) ----------------------------
+render_chart_panel <- function(df, panel_code) {
+  if (nrow(df) == 0) return("")
+  out <- '<ol class="track-list">\n'
+  for (i in seq_len(nrow(df))) {
+    out <- paste0(out, sprintf(
+      '<li class="track-row%s" onclick="playTrack(\'%s\', \'%s\', %d, this)" tabindex="0"><span class="track-rank">%02d</span>%s<div class="track-meta"><span class="track-title">%s</span><span class="track-artist">%s</span></div></li>\n',
+      if (i == 1) " selected" else "",
+      panel_code,
+      df$track_id[i],
+      df$rank[i],
+      df$rank[i],
+      render_change(df$change[i]),
+      htmlEscape(df$title[i]),
+      htmlEscape(df$artist[i])
+    ))
+  }
+  paste0(out, '</ol>\n')
+}
+
+cat('<div class="country-panel" id="panel-GLOBAL" style="display:block;">')
+cat(render_chart_panel(charts_global, "GLOBAL"))
+cat('</div>')
+
+for (i in seq_len(nrow(selectable))) {
+  cc_i <- selectable$country_code[i]
+  panel_data <- charts |> filter(country_code == cc_i) |> arrange(rank)
+  cat(sprintf('<div class="country-panel" id="panel-%s" style="display:none;">', cc_i))
+  cat(render_chart_panel(panel_data, cc_i))
+  cat('</div>')
+}
+
+# --- Load the Spotify iframe API last (handlers already defined) -----------
+cat('<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>\n')
+```
+
+## The wider view
+
+::: {.section-intro}
+Each country's top 50 is compared against every other country's. The matrix below is the *overlap* (Jaccard similarity) between every pair of charts, with countries reordered by hierarchical clustering &mdash; so linguistic and cultural blocs sit as visible squares on the diagonal.
+:::
+
+```{r heatmap}
+plot_ly(
+  z = sim_mat,
+  x = labels_ordered,
+  y = labels_ordered,
+  type = "heatmap",
+  colorscale = list(
+    c(0,    "#faf6ef"),
+    c(0.25, "#e8d4b8"),
+    c(0.6,  "#c97a4f"),
+    c(1,    "#5a2616")
+  ),
+  hovertemplate = "<b>%{y}</b> \u2194 <b>%{x}</b><br>Chart overlap: %{z:.0%}<extra></extra>",
+  showscale = TRUE,
+  colorbar = list(
+    title = list(text = "Overlap", font = list(size = 11)),
+    thickness = 8, len = 0.6, tickformat = ".0%"
+  ),
+  xgap = 1, ygap = 1
+) |>
+  layout(
+    paper_bgcolor = "#faf6ef",
+    plot_bgcolor  = "#faf6ef",
+    xaxis = list(tickangle = -45, tickfont = list(size = 9),
+                 showgrid = FALSE, zeroline = FALSE),
+    yaxis = list(autorange = "reversed", tickfont = list(size = 9),
+                 showgrid = FALSE, zeroline = FALSE),
+    margin = list(l = 140, r = 20, t = 20, b = 140),
+    height = 820
+  ) |>
+  config(displayModeBar = FALSE)
+```
+
+### § 01 &mdash; What everyone is hearing
+
+The tracks holding top-50 positions in the largest number of countries this week, out of the `r n_countries_tracked` national charts we track. The rest of the chart is cosmopolitan disagreement; these are the points of consensus.
+
+```{r ubiquity}
+#| results: asis
+
+track_summary <- charts |>
+  group_by(track_id) |>
+  summarise(
+    title       = first(title),
+    artist      = first(artist),
+    track_url   = first(track_url),
+    n_countries = n_distinct(country_code),
+    avg_rank    = mean(rank),
+    best_rank   = min(rank),
+    best_cc     = country_code[which.min(rank)],
+    best_country = country[which.min(rank)],
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_countries), avg_rank) |>
+  head(12)
+
+cat('<div class="outlier-grid">\n')
+for (i in seq_len(nrow(track_summary))) {
+  cat(sprintf(
+    '<article class="outlier"><div class="outlier-rank">%s in %d countries &middot; avg #%.0f</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+    flag_emoji(track_summary$best_cc[i]),
+    track_summary$n_countries[i],
+    track_summary$avg_rank[i],
+    htmlEscape(track_summary$title[i]),
+    htmlEscape(track_summary$artist[i]),
+    track_summary$track_id[i]
+  ))
+}
+cat('</div>\n')
+```
+
+### § 02 &mdash; The week's biggest gainers
+
+Tracks climbing the charts hardest right now: the cumulative number of positions gained across all countries where they're moving up. Velocity, not absolute popularity.
+
+```{r gainers}
+#| results: asis
+
+gainers <- charts |>
+  filter(!is.na(change), str_detect(change, "^\\+\\d")) |>
+  mutate(positions_gained = as.integer(str_replace(change, "\\+", ""))) |>
+  group_by(track_id) |>
+  summarise(
+    title       = first(title),
+    artist      = first(artist),
+    track_url   = first(track_url),
+    n_countries = n_distinct(country_code),
+    total_gain  = sum(positions_gained, na.rm = TRUE),
+    best_rank   = min(rank),
+    .groups = "drop"
+  ) |>
+  arrange(desc(total_gain), desc(n_countries)) |>
+  head(12)
+
+if (nrow(gainers) == 0) {
+  cat('<p class="data-pending">Position-change data not yet captured for this snapshot. The next fresh fetch will populate this section.</p>\n')
+} else {
+  cat('<div class="outlier-grid">\n')
+  for (i in seq_len(nrow(gainers))) {
+    cat(sprintf(
+      '<article class="outlier"><div class="outlier-rank">&uarr;%d places across %d countries</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+      gainers$total_gain[i],
+      gainers$n_countries[i],
+      htmlEscape(gainers$title[i]),
+      htmlEscape(gainers$artist[i]),
+      gainers$track_id[i]
+    ))
+  }
+  cat('</div>\n')
+}
+```
+
+### § 03 &mdash; Songs the rest of the world hasn't heard
+
+Each track here holds a top-50 position in exactly one country and appears nowhere else in our sample. The mirror image of § 01.
+
+```{r outliers}
+#| results: asis
+
+outliers <- charts |>
+  filter(track_id %in% unique_to_one) |>
+  arrange(rank) |>
+  group_by(country_code) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  arrange(rank) |>
+  head(12)
+
+cat('<div class="outlier-grid">\n')
+for (i in seq_len(nrow(outliers))) {
+  cat(sprintf(
+    '<article class="outlier"><div class="outlier-rank">%s &nbsp;#%02d in %s</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+    flag_emoji(outliers$country_code[i]),
+    outliers$rank[i],
+    htmlEscape(outliers$country[i]),
+    htmlEscape(outliers$title[i]),
+    htmlEscape(outliers$artist[i]),
+    outliers$track_id[i]
+  ))
+}
+cat('</div>\n')
+```
+
+:::
+
+::: {.footer-note}
+**Method.** Distinctiveness = mean Jaccard distance between a country's top-50 Spotify tracks and every other country's top-50, computed over Spotify track IDs (so two different recordings of the same song are correctly treated as different). The heatmap shows the inverse &mdash; chart *overlap*, also Jaccard &mdash; with countries reordered by hierarchical clustering (average linkage).
+
+**Source.** Chart data via [kworb.net](https://kworb.net/spotify/), a one-person hobby project that has been aggregating publicly-available Spotify chart data since 2014. We cache each weekly snapshot locally to keep load on their servers minimal.
+
+**Caveats.** Spotify penetration varies by country, so charts in lower-penetration markets reflect a younger, more urban, more anglophone slice of the population than charts in saturated ones. The "songs the rest of the world hasn't heard" panel will contain occasional false positives where a track sits just outside the top 50 in another country.
+:::
