@@ -1,5 +1,11 @@
 source("R/fetch_charts.R")
 
+stopifnot(identical(escape_chart_text("A$$AP"), "A&#36;&#36;AP"))
+stopifnot(identical(
+  escape_chart_text('A$$AP "live"', attribute = TRUE),
+  "A&#36;&#36;AP &quot;live&quot;"
+))
+
 fixture <- read_html('<html><head><title>Spotify Weekly Chart - Testland - 2026/07/09</title></head><body><table class="sortable"><tr><th>Pos</th><th>P+</th><th>Artist and Title</th></tr><tr><td>1</td><td>=</td><td><a href="../artist/a.html">Artist One</a> - <a href="../track/1234567890123456789012.html">Track One</a></td></tr><tr><td>broken</td><td>NEW</td><td>unparseable row</td></tr><tr><td>3</td><td>+2</td><td><a href="../artist/b.html">Artist Two</a> - <a href="../track/abcdefghijklmnopqrstuv.html">Track Two</a></td></tr></table></body></html>')
 
 stopifnot(identical(extract_kworb_chart_period(fixture), as.Date("2026-07-09")))

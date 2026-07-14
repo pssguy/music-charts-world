@@ -17,6 +17,14 @@ CHART_VALIDATION <- list(
   request_timeout_seconds = 30L
 )
 
+# Escape source-provided display text for raw HTML emitted through Quarto.
+# Dollar signs are valid chart content, but Pandoc can otherwise interpret
+# paired dollars as inline math before the raw HTML reaches the final page.
+escape_chart_text <- function(value, attribute = FALSE) {
+  escaped <- as.character(htmltools::htmlEscape(value, attribute = attribute))
+  gsub("$", "&#36;", escaped, fixed = TRUE)
+}
+
 kworb_chart_url <- function(country_code) {
   sprintf(
     "https://kworb.net/spotify/country/%s_weekly.html",

@@ -606,12 +606,12 @@ render_chart_panel <- function(df, panel_code) {
       df$rank[i],
       if (i == 1) "true" else "false",
       df$rank[i],
-      htmlEscape(df$title[i], attribute = TRUE),
-      htmlEscape(df$artist[i], attribute = TRUE),
+      escape_chart_text(df$title[i], attribute = TRUE),
+      escape_chart_text(df$artist[i], attribute = TRUE),
       df$rank[i],
       render_change(df$change[i]),
-      htmlEscape(df$title[i]),
-      htmlEscape(df$artist[i])
+      escape_chart_text(df$title[i]),
+      escape_chart_text(df$artist[i])
     ))
   }
   paste0(out, '</ol>\n')
@@ -706,10 +706,10 @@ for (i in seq_len(nrow(track_summary))) {
     flag_emoji(track_summary$best_cc[i]),
     track_summary$n_countries[i],
     track_summary$avg_rank[i],
-    htmlEscape(track_summary$title[i]),
-    htmlEscape(track_summary$artist[i]),
-    htmlEscape(track_summary$title[i], attribute = TRUE),
-    htmlEscape(track_summary$artist[i], attribute = TRUE),
+    escape_chart_text(track_summary$title[i]),
+    escape_chart_text(track_summary$artist[i]),
+    escape_chart_text(track_summary$title[i], attribute = TRUE),
+    escape_chart_text(track_summary$artist[i], attribute = TRUE),
     track_summary$track_id[i]
   ))
 }
@@ -748,10 +748,10 @@ if (nrow(gainers) == 0) {
       '<article class="outlier"><div class="outlier-rank">&uarr;%d places across %d countries</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe title="Play %s by %s on Spotify" src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
       gainers$total_gain[i],
       gainers$n_countries[i],
-      htmlEscape(gainers$title[i]),
-      htmlEscape(gainers$artist[i]),
-      htmlEscape(gainers$title[i], attribute = TRUE),
-      htmlEscape(gainers$artist[i], attribute = TRUE),
+      escape_chart_text(gainers$title[i]),
+      escape_chart_text(gainers$artist[i]),
+      escape_chart_text(gainers$title[i], attribute = TRUE),
+      escape_chart_text(gainers$artist[i], attribute = TRUE),
       gainers$track_id[i]
     ))
   }
@@ -782,10 +782,10 @@ for (i in seq_len(nrow(outliers))) {
     flag_emoji(outliers$country_code[i]),
     outliers$rank[i],
     htmlEscape(outliers$country[i]),
-    htmlEscape(outliers$title[i]),
-    htmlEscape(outliers$artist[i]),
-    htmlEscape(outliers$title[i], attribute = TRUE),
-    htmlEscape(outliers$artist[i], attribute = TRUE),
+    escape_chart_text(outliers$title[i]),
+    escape_chart_text(outliers$artist[i]),
+    escape_chart_text(outliers$title[i], attribute = TRUE),
+    escape_chart_text(outliers$artist[i], attribute = TRUE),
     outliers$track_id[i]
   ))
 }

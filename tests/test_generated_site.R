@@ -38,8 +38,75 @@ stopifnot(grepl("Chart week ending", body_text, fixed = TRUE))
 stopifnot(grepl("not affiliated with or endorsed by Spotify", body_text, fixed = TRUE))
 stopifnot(grepl("Method.", body_text, fixed = TRUE))
 stopifnot(grepl("Source and positioning.", body_text, fixed = TRUE))
-stopifnot(!grepl("TODO|FIXME|localhost", body_text, ignore.case = TRUE))
 stopifnot(!grepl("MUSICCHARTS_TEST_MARKETS", body_text, fixed = TRUE))
+
+assert_no_match <- function(values, pattern, label) {
+  values <- values[!is.na(values) & nzchar(values)]
+  matches <- unique(values[grepl(pattern, values, perl = TRUE)])
+  if (length(matches) > 0L) {
+    fragments <- unique(unlist(regmatches(
+      matches,
+      gregexpr(pattern, matches, perl = TRUE)
+    )))
+    stop(label, ": ", paste(head(fragments, 10L), collapse = " | "), call. = FALSE)
+  }
+}
+
+# Loopback hosts are forbidden only where a value represents a production URL.
+# Quarto's own inline localhostRegex implementation is code, not a published URL.
+loopback_pattern <- "(?i)(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|\\[::1\\])"
+stopifnot(
+  grepl(loopback_pattern, "http://localhost:8000/preview", perl = TRUE),
+  grepl(loopback_pattern, "http://127.0.0.1/site", perl = TRUE),
+  !grepl(loopback_pattern, "https://musiccharts.world/", perl = TRUE)
+)
+published_urls <- c(
+  html_attr(html_elements(page, "a[href], link[href]"), "href"),
+  html_attr(html_elements(page, "script[src], iframe[src], img[src], source[src]"), "src"),
+  html_attr(html_elements(page, "form[action]"), "action"),
+  html_attr(html_elements(page, "video[poster]"), "poster"),
+  html_attr(html_elements(page, "object[data]"), "data"),
+  html_attr(html_elements(page, 'meta[property="og:url"], meta[name="twitter:url"], meta[itemprop="url"]'), "content")
+)
+assert_no_match(published_urls, loopback_pattern, "Loopback host leaked into a published URL")
+
+# Placeholder checks target static/template material and explicit markers. Chart
+# panels and data cards are removed so ordinary international titles containing
+# words such as "Todo" remain valid content.
+placeholder_pattern <- paste(c(
+  "(?i)\\bTODO\\s*:",
+  "(?i)\\bFIXME\\s*:",
+  "(?i)\\bXXX\\s*:",
+  "(?i)\\bTBD\\b",
+  "(?i)LOREM\\s+IPSUM",
+  "(?i)EXAMPLE\\.COM",
+  "(?i)YOUR_[A-Z0-9_]+_HERE",
+  "(?i)REPLACE[_ -]ME",
+  "(?i)__PLACEHOLDER__",
+  "\\{\\{[^{}]+\\}\\}",
+  "<%=?[^%]+%>",
+  "(?i)\\[(?:TODO|FIXME|TBD|PLACEHOLDER)\\]"
+), collapse = "|")
+stopifnot(
+  grepl(placeholder_pattern, "TODO: replace this block", perl = TRUE),
+  grepl(placeholder_pattern, "FIXME: temporary copy", perl = TRUE),
+  !grepl(placeholder_pattern, "Todo Lo Fue", perl = TRUE),
+  !grepl(placeholder_pattern, "Peão Todo Tatuado", perl = TRUE)
+)
+
+static_page <- read_html(file.path(site_dir, "index.html"))
+xml2::xml_remove(html_elements(static_page, "script, style, .country-panel, .outlier"))
+static_text <- html_text2(html_element(static_page, "body"))
+static_attributes <- unname(unlist(lapply(html_elements(static_page, "*"), xml2::xml_attrs)))
+html_comments <- xml2::xml_text(xml2::xml_find_all(page, "//comment()"))
+template_files <- c("world-music-watch.qmd", "world-music-watch.css")
+template_files <- template_files[file.exists(template_files)]
+template_source <- unlist(lapply(template_files, readLines, warn = FALSE), use.names = FALSE)
+assert_no_match(
+  c(static_text, static_attributes, html_comments, template_source),
+  placeholder_pattern,
+  "Development placeholder leaked into generated output"
+)
 
 if (!is.null(chart_run)) {
   source("R/fetch_charts.R")
@@ -120,5 +187,10 @@ manifest_required <- c(
 stopifnot(all(manifest_required %in% names(manifest)))
 stopifnot(identical(manifest$validation$status, "pass"))
 stopifnot(!any(c("charts", "tracks", "chart_rows") %in% names(manifest)))
+assert_no_match(
+  jsonlite::toJSON(manifest, auto_unbox = TRUE, null = "null"),
+  loopback_pattern,
+  "Loopback host leaked into deployment metadata"
+)
 
 cat("generated-site tests passed\n")
