@@ -1,0 +1,22 @@
+Package: musicchartsworld
+Type: Project
+Title: MusicCharts.world Site Build
+Version: 0.0.0.9000
+Authors@R: person("MusicCharts.world", role = c("aut", "cre"), email = "noreply@example.com")
+Description: Reproducible dependencies for fetching, validating, rendering, and testing the MusicCharts.world site.
+License: MIT
+Encoding: UTF-8
+Imports:
+    dplyr (>= 1.1.4),
+    htmltools (>= 0.5.8),
+    htmlwidgets (>= 1.6.4),
+    jsonlite (>= 1.8.8),
+    knitr (>= 1.46),
+    lubridate (>= 1.9.3),
+    plotly (>= 4.10.4),
+    purrr (>= 1.0.2),
+    rmarkdown (>= 2.26),
+    rvest (>= 1.0.4),
+    stringr (>= 1.5.1),
+    tibble (>= 3.2.1),
+    tidyr (>= 1.3.1)

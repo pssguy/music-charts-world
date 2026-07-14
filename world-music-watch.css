@@ -54,6 +54,26 @@ h3 {
   color: var(--ink-soft); max-width: 65ch;
   margin: 16px 0 28px;
 }
+.visual-summary {
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  color: var(--ink-soft);
+  max-width: 75ch;
+  margin: 12px 0 28px;
+  padding-left: 12px;
+  border-left: 2px solid var(--rust);
+}
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
 
 /* ---- Tabs ---- */
 .panel-tabset { margin-top: 24px; }
@@ -143,6 +163,29 @@ h3 {
   max-width: 320px;
 }
 .country-selector-wrap select:focus { outline: none; border-bottom-color: var(--rust); }
+@media (max-width: 560px) {
+  .country-selector-wrap {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 2px;
+  }
+  .country-selector-wrap .selected-flag {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+  .country-selector-wrap label {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .country-selector-wrap select {
+    grid-column: 2;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+}
 
 /* ---- Track list ---- */
 .track-list {
@@ -150,6 +193,11 @@ h3 {
   column-count: 2;
   column-gap: 40px;
   column-rule: 1px solid var(--line);
+}
+.track-list-item {
+  list-style: none;
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 @media (max-width: 760px) {
   .track-list { column-count: 1; column-rule: none; }
@@ -161,17 +209,23 @@ h3 {
   gap: 12px;
   padding: 10px 8px 10px 4px;
   border-top: 1px solid var(--line);
-  break-inside: avoid;
-  page-break-inside: avoid;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
   cursor: pointer;
   transition: background 0.12s;
   user-select: none;
 }
-.track-row:first-child { border-top: 1px solid var(--ink); }
+.track-list-item:first-child .track-row { border-top: 1px solid var(--ink); }
 .track-row:hover    { background: var(--hover); }
 .track-row.selected { background: var(--selected); }
 .track-row.selected .track-title { color: var(--rust-deep); }
-.track-row:focus    { outline: 1px dashed var(--rust); outline-offset: 2px; }
+.track-row:focus-visible { outline: 2px dashed var(--rust); outline-offset: 2px; }
 
 .track-rank {
   font-family: 'JetBrains Mono', monospace;

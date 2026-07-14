@@ -1,8 +1,12 @@
 ---
-title: "World Music Watch"
-subtitle: "Weekly cartography of the global Spotify charts"
+title: "MusicCharts.world"
+subtitle: "A weekly exploration of how Spotify charts overlap across countries"
 author: "chai publications"
-date: today
+description-meta: "An independent weekly exploration of Spotify chart overlap, movement, and local listening patterns across countries."
+canonical-url: "https://musiccharts.world/"
+output-file: index.html
+open-graph: true
+twitter-card: true
 format:
   html:
     toc: false
@@ -72,8 +76,18 @@ library(lubridate)
 
 source("R/fetch_charts.R")
 
-# All countries; the scraper handles 404s/empty pages gracefully.
-country_codes <- WORLD_MUSIC_WATCH_COUNTRIES
+# Production uses the complete configured list. A deliberate environment
+# override supports small local smoke renders without changing that list.
+market_override <- trimws(Sys.getenv("MUSICCHARTS_TEST_MARKETS"))
+if (nzchar(market_override)) {
+  country_codes <- tolower(trimws(strsplit(market_override, ",", fixed = TRUE)[[1]]))
+  unknown_markets <- setdiff(country_codes, WORLD_MUSIC_WATCH_COUNTRIES)
+  if (length(unknown_markets) > 0L) {
+    stop("Unknown MUSICCHARTS_TEST_MARKETS values: ", paste(unknown_markets, collapse = ", "))
+  }
+} else {
+  country_codes <- WORLD_MUSIC_WATCH_COUNTRIES
+}
 
 # Convert ISO-2 country code to flag emoji via regional indicator symbols.
 flag_emoji <- function(codes) {
@@ -87,12 +101,12 @@ flag_emoji <- function(codes) {
 
 # Render a position-change cell from kworb's "P+" text
 render_change <- function(ch) {
-  if (is.na(ch) || ch == "") return('<span class="track-change blank"></span>')
-  if (ch == "=")   return('<span class="track-change same">&mdash;</span>')
-  if (ch == "NEW") return('<span class="track-change new">NEW</span>')
-  if (ch == "RE")  return('<span class="track-change re">RE</span>')
-  if (substr(ch, 1, 1) == "+") return(sprintf('<span class="track-change up">&uarr;%s</span>', substring(ch, 2)))
-  if (substr(ch, 1, 1) == "-") return(sprintf('<span class="track-change down">&darr;%s</span>', substring(ch, 2)))
+  if (is.na(ch) || ch == "") return('<span class="track-change blank"><span class="visually-hidden">Movement unavailable</span></span>')
+  if (ch == "=")   return('<span class="track-change same"><span aria-hidden="true">&mdash;</span><span class="visually-hidden">No change</span></span>')
+  if (ch == "NEW") return('<span class="track-change new"><span aria-hidden="true">NEW</span><span class="visually-hidden">New entry</span></span>')
+  if (ch == "RE")  return('<span class="track-change re"><span aria-hidden="true">RE</span><span class="visually-hidden">Re-entry</span></span>')
+  if (substr(ch, 1, 1) == "+") return(sprintf('<span class="track-change up"><span aria-hidden="true">&uarr;%s</span><span class="visually-hidden">Up %s positions</span></span>', substring(ch, 2), substring(ch, 2)))
+  if (substr(ch, 1, 1) == "-") return(sprintf('<span class="track-change down"><span aria-hidden="true">&darr;%s</span><span class="visually-hidden">Down %s positions</span></span>', substring(ch, 2), substring(ch, 2)))
   sprintf('<span class="track-change">%s</span>', htmlEscape(ch))
 }
 ```
@@ -100,30 +114,26 @@ render_change <- function(ch) {
 ```{r fetch}
 #| include: false
 
-cache_dir    <- "data"
-cache_week   <- format(floor_date(Sys.Date(), "week", week_start = 5), "%Y-%m-%d")
-cache_file   <- file.path(cache_dir, paste0("charts_", cache_week, ".rds"))
-cache_global <- file.path(cache_dir, paste0("global_", cache_week, ".rds"))
-dir.create(cache_dir, showWarnings = FALSE)
-
-if (file.exists(cache_file)) {
-  charts <- readRDS(cache_file)
+validated_run_path <- trimws(Sys.getenv("MUSICCHARTS_VALIDATED_RUN"))
+if (nzchar(validated_run_path)) {
+  if (!file.exists(validated_run_path)) {
+    stop("Validated chart snapshot does not exist: ", validated_run_path)
+  }
+  chart_run <- readRDS(validated_run_path)
+  if (!identical(chart_run$validation_status, "pass")) {
+    stop("The supplied chart snapshot did not pass critical validation.")
+  }
+  if (!identical(toupper(country_codes), chart_run$configured_markets)) {
+    stop("The supplied chart snapshot does not match the configured market list.")
+  }
 } else {
-  charts <- fetch_all_countries(country_codes, top_n = 50)
-  saveRDS(charts, cache_file)
+  chart_run <- fetch_chart_run(country_codes, top_n = 50)
 }
-
-if (file.exists(cache_global)) {
-  charts_global <- readRDS(cache_global)
-} else {
-  charts_global <- fetch_kworb_country("global", top_n = 50)
-  saveRDS(charts_global, cache_global)
-}
-
-if (!"change" %in% names(charts))        charts$change        <- NA_character_
-if (!"change" %in% names(charts_global)) charts_global$change <- NA_character_
-
-stopifnot(nrow(charts) > 100, nrow(charts_global) >= 40)
+charts <- chart_run$charts
+charts_global <- chart_run$charts_global
+chart_period <- chart_run$chart_period
+fetch_timestamp <- chart_run$fetched_at
+coverage <- chart_run$coverage
 ```
 
 ```{r metrics}
@@ -202,16 +212,26 @@ labels_ordered <- country_info$country[match(cc_ordered, country_info$country_co
 
 sim_mat <- 1 - dist_mat[order_idx, order_idx]
 diag(sim_mat) <- NA_real_
+
+most_distinctive <- stats |> slice_max(distinctiveness, n = 1, with_ties = FALSE)
+least_distinctive <- stats |> slice_min(distinctiveness, n = 1, with_ties = FALSE)
+sim_pairs <- which(upper.tri(sim_mat) & !is.na(sim_mat), arr.ind = TRUE)
+strongest_pair_idx <- sim_pairs[which.max(sim_mat[sim_pairs]), , drop = FALSE]
+strongest_pair <- c(
+  labels_ordered[strongest_pair_idx[1, 1]],
+  labels_ordered[strongest_pair_idx[1, 2]]
+)
+strongest_pair_overlap <- sim_mat[strongest_pair_idx]
 ```
 
 ::: {.kicker}
-World Music Watch · Week of `r format(floor_date(Sys.Date(), "week", week_start = 5), "%d %B %Y")`
+Chart week ending `r paste(format(chart_period, "%B"), as.integer(format(chart_period, "%d")), format(chart_period, "%Y"))` · verified from source · fetched `r fetch_timestamp`
 :::
 
-# What the world is listening to, [and where it disagrees.]{.italic-rust}
+## What the world is listening to, [and where it disagrees.]{.italic-rust}
 
 ::: {.standfirst}
-A weekly cartography of the global Spotify charts: which countries hold the most distinctive listening habits, which fall in line with the international consensus, and the songs that go straight to the top in one country and nowhere else.
+MusicCharts.world is an independent weekly exploration of how Spotify charts overlap across countries. Rankings are sourced through Kworb, and the site is not affiliated with or endorsed by Spotify.
 :::
 
 ::: {.panel-tabset}
@@ -219,7 +239,9 @@ A weekly cartography of the global Spotify charts: which countries hold the most
 ## The charts
 
 ::: {.section-intro}
-Click any country on the map &mdash; or pick from the dropdown &mdash; to see its top 50. Click any track row to play it. Use **Play All** to listen through the full chart in order, or **Shuffle** to randomise. *Not all countries are shown: chart data is only available for the `r n_countries_tracked` markets where our source publishes weekly rankings.*
+Click any country on the map &mdash; or pick from the dropdown &mdash; to see its top 50. Choose a track to play it. Use **Play All** to listen through the full chart in order, or **Shuffle** to randomise.
+
+Coverage for this issue: `r coverage$successful_markets` of `r coverage$configured_markets` configured markets loaded; `r coverage$unavailable_markets` unavailable from the upstream source; `r coverage$failed_markets` failed. Failed validation blocks publication.
 :::
 
 ```{r world-map}
@@ -259,6 +281,10 @@ plot_ly(
     }
   ")
 ```
+
+::: {.visual-summary}
+Map summary: `r most_distinctive$country` has the highest distinctiveness score in this issue; `r least_distinctive$country` has the lowest. Distinctiveness is a site-generated comparison of current Top 50 overlap, not a Spotify metric.
+:::
 
 ```{r charts-panels}
 #| results: asis
@@ -406,9 +432,15 @@ function showCountryPanel(code) {
   if (flagEl && def) flagEl.textContent = def.flag;
   const panel = document.getElementById("panel-" + code);
   if (panel) {
-    panel.querySelectorAll(".track-row").forEach(r => r.classList.remove("selected"));
+    panel.querySelectorAll(".track-row").forEach(r => {
+      r.classList.remove("selected");
+      r.setAttribute("aria-pressed", "false");
+    });
     const first = panel.querySelector(".track-row");
-    if (first) first.classList.add("selected");
+    if (first) {
+      first.classList.add("selected");
+      first.setAttribute("aria-pressed", "true");
+    }
   }
   const sel = document.getElementById("country-select");
   if (sel) sel.value = code;
@@ -424,9 +456,15 @@ function playTrack(panelCode, trackId, rank, rowEl) {
   }
   const panel = document.getElementById("panel-" + panelCode);
   if (panel) {
-    panel.querySelectorAll(".track-row").forEach(r => r.classList.remove("selected"));
+    panel.querySelectorAll(".track-row").forEach(r => {
+      r.classList.remove("selected");
+      r.setAttribute("aria-pressed", "false");
+    });
   }
-  if (rowEl) rowEl.classList.add("selected");
+  if (rowEl) {
+    rowEl.classList.add("selected");
+    rowEl.setAttribute("aria-pressed", "true");
+  }
 }
 
 // --- Play All / Shuffle ---
@@ -467,9 +505,13 @@ function playQueueTrack() {
   const panel = document.getElementById("panel-" + currentPanelCode);
   if (panel) {
     const rows = panel.querySelectorAll(".track-row");
-    rows.forEach(r => r.classList.remove("selected"));
+    rows.forEach(r => {
+      r.classList.remove("selected");
+      r.setAttribute("aria-pressed", "false");
+    });
     if (rows[idx]) {
       rows[idx].classList.add("selected");
+      rows[idx].setAttribute("aria-pressed", "true");
       rows[idx].scrollIntoView({behavior: "smooth", block: "nearest"});
     }
   }
@@ -527,7 +569,7 @@ cat('</script>\n')
 cat('<div class="now-playing-bar"><div class="np-row">')
 
 cat('<div class="country-selector-wrap">')
-cat('<span id="selected-flag" class="selected-flag">\U0001F30D</span>')
+cat('<span id="selected-flag" class="selected-flag" aria-hidden="true">\U0001F30D</span>')
 cat('<label for="country-select">Showing chart for:</label>')
 cat('<select id="country-select" onchange="showCountryPanel(this.value)">')
 cat('<option value="GLOBAL">&mdash; Worldwide &mdash;</option>')
@@ -540,11 +582,11 @@ cat('</select>')
 cat('</div>')
 
 cat('<div class="playback-controls">')
-cat('<button class="queue-btn" onclick="startQueue(false)" title="Play all tracks 1\u201350">&#9654; Play All</button>')
-cat('<button class="queue-btn" onclick="startQueue(true)" title="Shuffle all tracks">&#128256; Shuffle</button>')
-cat('<button class="queue-btn" id="queue-skip-btn" onclick="skipQueue()" title="Next track" style="display:none;">&#9197; Next</button>')
-cat('<button class="queue-btn stop" id="queue-stop-btn" onclick="stopQueue()" title="Stop queue" style="display:none;">&#9632; Stop</button>')
-cat('<span id="queue-indicator" class="queue-indicator" style="display:none;"></span>')
+cat('<button type="button" class="queue-btn" onclick="startQueue(false)" aria-label="Play all tracks in chart order">&#9654; Play All</button>')
+cat('<button type="button" class="queue-btn" onclick="startQueue(true)" aria-label="Shuffle all tracks in this chart">&#128256; Shuffle</button>')
+cat('<button type="button" class="queue-btn" id="queue-skip-btn" onclick="skipQueue()" aria-label="Play next track" style="display:none;">&#9197; Next</button>')
+cat('<button type="button" class="queue-btn stop" id="queue-stop-btn" onclick="stopQueue()" aria-label="Stop playback queue" style="display:none;">&#9632; Stop</button>')
+cat('<span id="queue-indicator" class="queue-indicator" role="status" aria-live="polite" style="display:none;"></span>')
 cat('</div>')
 
 cat('<div id="spotify-player-container"></div>')
@@ -557,11 +599,15 @@ render_chart_panel <- function(df, panel_code) {
   out <- '<ol class="track-list">\n'
   for (i in seq_len(nrow(df))) {
     out <- paste0(out, sprintf(
-      '<li class="track-row%s" onclick="playTrack(\'%s\', \'%s\', %d, this)" tabindex="0"><span class="track-rank">%02d</span>%s<div class="track-meta"><span class="track-title">%s</span><span class="track-artist">%s</span></div></li>\n',
+      '<li class="track-list-item"><button type="button" class="track-row%s" onclick="playTrack(\'%s\', \'%s\', %d, this)" aria-pressed="%s" aria-label="Play rank %d: %s by %s"><span class="track-rank">%02d</span>%s<span class="track-meta"><span class="track-title">%s</span><span class="track-artist">%s</span></span></button></li>\n',
       if (i == 1) " selected" else "",
       panel_code,
       df$track_id[i],
       df$rank[i],
+      if (i == 1) "true" else "false",
+      df$rank[i],
+      htmlEscape(df$title[i], attribute = TRUE),
+      htmlEscape(df$artist[i], attribute = TRUE),
       df$rank[i],
       render_change(df$change[i]),
       htmlEscape(df$title[i]),
@@ -626,6 +672,10 @@ plot_ly(
   config(displayModeBar = FALSE)
 ```
 
+::: {.visual-summary}
+Heatmap summary: `r strongest_pair[1]` and `r strongest_pair[2]` have the highest pairwise chart overlap in this issue (`r sprintf("%.0f%%", strongest_pair_overlap * 100)`). The complete matrix remains available above for exploration.
+:::
+
 ### § 01 &mdash; What everyone is hearing
 
 The tracks holding top-50 positions in the largest number of countries this week, out of the `r n_countries_tracked` national charts we track. The rest of the chart is cosmopolitan disagreement; these are the points of consensus.
@@ -652,12 +702,14 @@ track_summary <- charts |>
 cat('<div class="outlier-grid">\n')
 for (i in seq_len(nrow(track_summary))) {
   cat(sprintf(
-    '<article class="outlier"><div class="outlier-rank">%s in %d countries &middot; avg #%.0f</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+    '<article class="outlier"><div class="outlier-rank">%s in %d countries &middot; avg #%.0f</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe title="Play %s by %s on Spotify" src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
     flag_emoji(track_summary$best_cc[i]),
     track_summary$n_countries[i],
     track_summary$avg_rank[i],
     htmlEscape(track_summary$title[i]),
     htmlEscape(track_summary$artist[i]),
+    htmlEscape(track_summary$title[i], attribute = TRUE),
+    htmlEscape(track_summary$artist[i], attribute = TRUE),
     track_summary$track_id[i]
   ))
 }
@@ -693,11 +745,13 @@ if (nrow(gainers) == 0) {
   cat('<div class="outlier-grid">\n')
   for (i in seq_len(nrow(gainers))) {
     cat(sprintf(
-      '<article class="outlier"><div class="outlier-rank">&uarr;%d places across %d countries</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+      '<article class="outlier"><div class="outlier-rank">&uarr;%d places across %d countries</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe title="Play %s by %s on Spotify" src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
       gainers$total_gain[i],
       gainers$n_countries[i],
       htmlEscape(gainers$title[i]),
       htmlEscape(gainers$artist[i]),
+      htmlEscape(gainers$title[i], attribute = TRUE),
+      htmlEscape(gainers$artist[i], attribute = TRUE),
       gainers$track_id[i]
     ))
   }
@@ -724,12 +778,14 @@ outliers <- charts |>
 cat('<div class="outlier-grid">\n')
 for (i in seq_len(nrow(outliers))) {
   cat(sprintf(
-    '<article class="outlier"><div class="outlier-rank">%s &nbsp;#%02d in %s</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
+    '<article class="outlier"><div class="outlier-rank">%s &nbsp;#%02d in %s</div><h3 class="outlier-title">%s</h3><p class="outlier-artist">%s</p><div class="outlier-player"><iframe title="Play %s by %s on Spotify" src="https://open.spotify.com/embed/track/%s?utm_source=generator&theme=0" width="100%%" height="80" frameborder="0" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture" loading="lazy"></iframe></div></article>\n',
     flag_emoji(outliers$country_code[i]),
     outliers$rank[i],
     htmlEscape(outliers$country[i]),
     htmlEscape(outliers$title[i]),
     htmlEscape(outliers$artist[i]),
+    htmlEscape(outliers$title[i], attribute = TRUE),
+    htmlEscape(outliers$artist[i], attribute = TRUE),
     outliers$track_id[i]
   ))
 }
@@ -738,10 +794,18 @@ cat('</div>\n')
 
 :::
 
+## Coverage and availability
+
+This issue uses the verified weekly chart period ending `r format(chart_period, "%d %B %Y")`. `r coverage$successful_markets` of `r coverage$configured_markets` configured national markets loaded successfully. The worldwide chart is validated separately.
+
+`r if (length(chart_run$unavailable_markets) == 0) "No configured markets were unavailable from the upstream source for this issue." else paste("Unavailable markets:", paste(country_info$country[match(chart_run$unavailable_markets, country_info$country_code)], collapse = ", "), ".")`
+
+The fetch completed at `r fetch_timestamp`. A source or parser failure is not silently omitted: it stops publication. An upstream 404 is reported here as unavailable and is not treated as a chart with zero entries.
+
 ::: {.footer-note}
-**Method.** Distinctiveness = mean Jaccard distance between a country's top-50 Spotify tracks and every other country's top-50, computed over Spotify track IDs (so two different recordings of the same song are correctly treated as different). The heatmap shows the inverse &mdash; chart *overlap*, also Jaccard &mdash; with countries reordered by hierarchical clustering (average linkage).
+**Method.** Similarity, overlap, movement totals, and distinctiveness are analytical measures generated by MusicCharts.world from the current Top 50 snapshot. Distinctiveness is the mean Jaccard distance between a country's track-ID set and every other country's set. The heatmap shows the inverse &mdash; chart overlap &mdash; with countries reordered by hierarchical clustering (average linkage).
 
-**Source.** Chart data via [kworb.net](https://kworb.net/spotify/), a one-person hobby project that has been aggregating publicly-available Spotify chart data since 2014. We cache each weekly snapshot locally to keep load on their servers minimal.
+**Source and positioning.** Rankings are sourced through [Kworb](https://kworb.net/spotify/), which identifies Spotify Charts as its source. MusicCharts.world is independent and is not affiliated with or endorsed by Spotify. The verified chart period comes from the upstream weekly page; the fetch timestamp is recorded separately. Chart availability depends on that upstream source.
 
-**Caveats.** Spotify penetration varies by country, so charts in lower-penetration markets reflect a younger, more urban, more anglophone slice of the population than charts in saturated ones. The "songs the rest of the world hasn't heard" panel will contain occasional false positives where a track sits just outside the top 50 in another country.
+**Identity and limitations.** Spotify track IDs are source identifiers, not guaranteed canonical recording identities. Remasters, reissues, alternate versions, or replacement IDs may be treated separately, while catalog changes may interrupt continuity. Spotify penetration varies by country, and local panels can contain false positives where a track sits just outside the Top 50 elsewhere. Featured-artist text follows the upstream presentation and is not a complete credit record.
 :::

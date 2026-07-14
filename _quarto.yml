@@ -1,6 +1,13 @@
 project:
   type: website
   output-dir: _site
+  resources:
+    - CNAME
+    - robots.txt
 
 website:
-  title: "World Music Watch"
+  title: "MusicCharts.world"
+  site-url: "https://musiccharts.world"
+  description: "An independent weekly exploration of Spotify chart overlap, movement, and local listening patterns across countries."
+  open-graph: true
+  twitter-card: true

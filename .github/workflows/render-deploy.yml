@@ -1,66 +1,266 @@
-# .github/workflows/render-deploy.yml
-# Renders the Quarto site weekly (Friday) and deploys to GitHub Pages.
-# Also runs on push to main so you can trigger manually.
+name: Validate, Render & Deploy
 
-name: Render & Deploy
-
-on:
+"on":
   schedule:
-    - cron: '0 6 * * 5'   # Every Friday at 06:00 UTC
+    # Every Friday at 06:00 UTC. The source chart period is verified separately.
+    - cron: "0 6 * * 5"
   push:
     branches: [main]
-  workflow_dispatch:         # Manual trigger from GitHub UI
+  workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  render:
+  prepare:
+    name: Prepare release
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Verify release configuration
+        run: python3 scripts/check_release_config.py
+
+  fetch_validate:
+    name: Fetch and validate all markets
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      chart_period: ${{ steps.fetch.outputs.chart_period }}
+      fetched_at: ${{ steps.fetch.outputs.fetched_at }}
+      configured_count: ${{ steps.fetch.outputs.configured_count }}
+      successful_count: ${{ steps.fetch.outputs.successful_count }}
+      failed_count: ${{ steps.fetch.outputs.failed_count }}
+      unavailable_count: ${{ steps.fetch.outputs.unavailable_count }}
+      configured_names: ${{ steps.fetch.outputs.configured_names }}
+      successful_names: ${{ steps.fetch.outputs.successful_names }}
+      failed_names: ${{ steps.fetch.outputs.failed_names }}
+      unavailable_names: ${{ steps.fetch.outputs.unavailable_names }}
+      worldwide_row_count: ${{ steps.fetch.outputs.worldwide_row_count }}
+      warning_count: ${{ steps.fetch.outputs.warning_count }}
+      warning_messages: ${{ steps.fetch.outputs.warning_messages }}
+      critical_failure_count: ${{ steps.fetch.outputs.critical_failure_count }}
+      critical_failures: ${{ steps.fetch.outputs.critical_failures }}
+      validation_status: ${{ steps.fetch.outputs.validation_status }}
+    steps:
+      - uses: actions/checkout@v6
 
       - uses: r-lib/actions/setup-r@v2
         with:
-          r-version: '4.4.0'
+          r-version: "4.4.0"
+          use-public-rspm: true
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          packages: |
-            dplyr
-            tidyr
-            purrr
-            stringr
-            plotly
-            htmltools
-            htmlwidgets
-            lubridate
-            rvest
-            tibble
+          cache-version: 1
 
-      - uses: quarto-dev/quarto-actions/setup@v2
+      - name: Fetch source charts and run critical validation
+        id: fetch
+        run: Rscript scripts/fetch_validate.R staging/input
 
-      - name: Render site
-        run: quarto render world-music-watch.qmd
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload validation report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
         with:
-          path: _site     # Quarto's default output directory
+          name: validation-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/input/validation-report.json
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Upload validated short-lived snapshot
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            staging/input/chart-run.rds
+            staging/input/validation-report.json
+          if-no-files-found: error
+          retention-days: 1
+
+  render:
+    name: Render staging site
+    needs: fetch_validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      site_bytes: ${{ steps.prepare_site.outputs.site_bytes }}
+      index_bytes: ${{ steps.prepare_site.outputs.index_bytes }}
+      file_count: ${{ steps.prepare_site.outputs.file_count }}
+      render_warning_count: ${{ steps.prepare_site.outputs.render_warning_count }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4.0"
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache-version: 1
+
+      - uses: quarto-dev/quarto-actions/setup@v2.2.0
+        with:
+          version: "1.9.38"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/input
+
+      - name: Read previous deployment size when available
+        run: python3 scripts/read_previous_site_size.py
+
+      - name: Clean and render staging output
+        env:
+          MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
+        run: |
+          rm -rf staging/site
+          mkdir -p staging/site
+          quarto render world-music-watch.qmd --output-dir staging/site
+
+      - name: Validate output size and write public manifest
+        id: prepare_site
+        env:
+          MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
+        run: >-
+          Rscript scripts/prepare_site.R
+          staging/site
+          staging/input/chart-run.rds
+          staging/input/validation-report.json
+
+      - name: Upload tested site candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/site
+          if-no-files-found: error
+          retention-days: 1
+
+  test:
+    name: Test generated site
+    needs: [fetch_validate, render]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4.0"
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache-version: 1
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/input
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/site
+
+      - name: Run parser and generated-site tests
+        env:
+          MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
+          MUSICCHARTS_SITE_DIR: ${{ github.workspace }}/staging/site
+        run: |
+          Rscript tests/test_fetch_charts.R
+          Rscript tests/test_generated_site.R
+
+      - name: Run local HTTP smoke test
+        run: |
+          python3 -m http.server 8765 --directory staging/site >/tmp/musiccharts-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error http://127.0.0.1:8765/ >/tmp/musiccharts-index.html; then
+              break
+            fi
+            sleep 1
+          done
+          test -s /tmp/musiccharts-index.html
+          curl --fail --silent --show-error http://127.0.0.1:8765/deployment-manifest.json >/tmp/musiccharts-manifest.json
+          python3 -c 'import json; data=json.load(open("/tmp/musiccharts-manifest.json")); assert data["validation"]["status"] == "pass"'
 
   deploy:
-    needs: render
+    name: Deploy GitHub Pages
+    needs: [fetch_validate, render, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/site
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Package the Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: staging/site
+          retention-days: 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  report:
+    name: Publish run summary
+    if: ${{ always() }}
+    needs: [prepare, fetch_validate, render, test, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Write publication summary
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          FETCH_RESULT: ${{ needs.fetch_validate.result }}
+          RENDER_RESULT: ${{ needs.render.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          CHART_PERIOD: ${{ needs.fetch_validate.outputs.chart_period }}
+          FETCHED_AT: ${{ needs.fetch_validate.outputs.fetched_at }}
+          CONFIGURED_COUNT: ${{ needs.fetch_validate.outputs.configured_count }}
+          SUCCESSFUL_COUNT: ${{ needs.fetch_validate.outputs.successful_count }}
+          FAILED_COUNT: ${{ needs.fetch_validate.outputs.failed_count }}
+          UNAVAILABLE_COUNT: ${{ needs.fetch_validate.outputs.unavailable_count }}
+          CONFIGURED_NAMES: ${{ needs.fetch_validate.outputs.configured_names }}
+          SUCCESSFUL_NAMES: ${{ needs.fetch_validate.outputs.successful_names }}
+          FAILED_NAMES: ${{ needs.fetch_validate.outputs.failed_names }}
+          UNAVAILABLE_NAMES: ${{ needs.fetch_validate.outputs.unavailable_names }}
+          WORLDWIDE_ROW_COUNT: ${{ needs.fetch_validate.outputs.worldwide_row_count }}
+          WARNING_COUNT: ${{ needs.fetch_validate.outputs.warning_count }}
+          WARNING_MESSAGES: ${{ needs.fetch_validate.outputs.warning_messages }}
+          CRITICAL_FAILURE_COUNT: ${{ needs.fetch_validate.outputs.critical_failure_count }}
+          CRITICAL_FAILURES: ${{ needs.fetch_validate.outputs.critical_failures }}
+          VALIDATION_STATUS: ${{ needs.fetch_validate.outputs.validation_status }}
+          SITE_BYTES: ${{ needs.render.outputs.site_bytes }}
+          INDEX_BYTES: ${{ needs.render.outputs.index_bytes }}
+          FILE_COUNT: ${{ needs.render.outputs.file_count }}
+          RENDER_WARNING_COUNT: ${{ needs.render.outputs.render_warning_count }}
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+          DEPLOYED_COMMIT: ${{ github.sha }}
+        run: python3 scripts/write_final_summary.py
