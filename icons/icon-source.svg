@@ -1,0 +1,24 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" fill="#132A46"/>
+
+  <circle cx="256" cy="280" r="155" fill="#2EC4B6"/>
+
+  <clipPath id="globeClip">
+    <circle cx="256" cy="280" r="155"/>
+  </clipPath>
+  <g clip-path="url(#globeClip)">
+    <path d="M 200,235 C 230,220 255,235 250,270 C 265,300 245,340 220,370 C 205,385 185,360 180,320 C 175,280 180,250 200,235 Z" fill="#167F71"/>
+    <path d="M 345,275 C 365,262 395,270 398,295 C 400,315 378,330 355,325 C 340,320 335,295 345,275 Z" fill="#167F71"/>
+    <path d="M 295,335 C 305,328 318,332 316,344 C 314,354 300,356 293,348 C 289,342 290,340 295,335 Z" fill="#167F71"/>
+    <ellipse cx="256" cy="280" rx="155" ry="34" fill="none" stroke="#EAFBF9" stroke-width="4" opacity="0.35"/>
+  </g>
+  <circle cx="256" cy="280" r="155" fill="none" stroke="#0E2036" stroke-width="4" opacity="0.5"/>
+
+  <g fill="#FFB627" transform="translate(-88,-122)">
+    <polygon points="350,213 421,197 421,216 350,232"/>
+    <rect x="350" y="213" width="11" height="175"/>
+    <rect x="410" y="197" width="11" height="175"/>
+    <ellipse cx="333" cy="372" rx="29" ry="21" transform="rotate(-18 333 372)"/>
+    <ellipse cx="393" cy="356" rx="29" ry="21" transform="rotate(-18 393 356)"/>
+  </g>
+</svg>

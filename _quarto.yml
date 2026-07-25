@@ -11,3 +11,12 @@ website:
   description: "An independent weekly exploration of Spotify chart overlap, movement, and local listening patterns across countries."
   open-graph: true
   twitter-card: true
+  favicon: icons/favicon-32.png
+
+format:
+  html:
+    include-in-header:
+      - text: |
+          <link rel="manifest" href="/manifest.json">
+          <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+          <meta name="theme-color" content="#132A46">  
