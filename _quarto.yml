@@ -1,9 +1,12 @@
+
 project:
   type: website
   output-dir: _site
   resources:
     - CNAME
     - robots.txt
+    - manifest.json
+    - icons    
 
 website:
   title: "MusicCharts.world"
@@ -19,4 +22,5 @@ format:
       - text: |
           <link rel="manifest" href="/manifest.json">
           <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-          <meta name="theme-color" content="#132A46">  
+          <meta name="theme-color" content="#132A46">
+        
