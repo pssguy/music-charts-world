@@ -2,8 +2,8 @@ name: Validate, Render & Deploy
 
 "on":
   schedule:
-    # Every Friday at 06:00 UTC. The source chart period is verified separately.
-    - cron: "0 6 * * 5"
+    - cron: "0 18 * * 5"
+    - cron: "0 18 * * 6"
   push:
     branches: [main]
   workflow_dispatch:
@@ -33,6 +33,12 @@ jobs:
     outputs:
       chart_period: ${{ steps.fetch.outputs.chart_period }}
       fetched_at: ${{ steps.fetch.outputs.fetched_at }}
+      source_url: ${{ steps.fetch.outputs.source_url }}
+      expected_period: ${{ steps.publication_gate.outputs.expected_period }}
+      live_period: ${{ steps.publication_gate.outputs.live_period }}
+      publication_status: ${{ steps.publication_gate.outputs.publication_status }}
+      release_action: ${{ steps.publication_gate.outputs.release_action }}
+      manifest_warning: ${{ steps.publication_gate.outputs.manifest_warning }}
       configured_count: ${{ steps.fetch.outputs.configured_count }}
       successful_count: ${{ steps.fetch.outputs.successful_count }}
       failed_count: ${{ steps.fetch.outputs.failed_count }}
@@ -63,6 +69,13 @@ jobs:
         id: fetch
         run: Rscript scripts/fetch_validate.R staging/input
 
+      - name: Check chart freshness and live deployment period
+        id: publication_gate
+        run: >-
+          python3 scripts/publication_gate.py
+          --chart-period "${{ steps.fetch.outputs.chart_period }}"
+          --source-url "${{ steps.fetch.outputs.source_url }}"
+
       - name: Upload validation report
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -72,8 +85,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
 
+      - name: Upload publication decision
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: publication-decision-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/input/publication-decision.json
+          if-no-files-found: warn
+          retention-days: 1
+
       - name: Upload validated short-lived snapshot
-        if: ${{ success() }}
+        if: ${{ success() && steps.publication_gate.outputs.release_action == 'deploy' }}
         uses: actions/upload-artifact@v7
         with:
           name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
@@ -86,6 +108,7 @@ jobs:
   render:
     name: Render staging site
     needs: fetch_validate
+    if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -149,6 +172,7 @@ jobs:
   test:
     name: Test generated site
     needs: [fetch_validate, render]
+    if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -178,6 +202,7 @@ jobs:
           MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
           MUSICCHARTS_SITE_DIR: ${{ github.workspace }}/staging/site
         run: |
+          python3 -m unittest discover -s tests -p 'test_*.py'
           Rscript tests/test_fetch_charts.R
           Rscript tests/test_generated_site.R
 
@@ -199,6 +224,7 @@ jobs:
   deploy:
     name: Deploy GitHub Pages
     needs: [fetch_validate, render, test]
+    if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -211,10 +237,15 @@ jobs:
     outputs:
       page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v7
         with:
           name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: staging/site
+
+      - name: Finalize public deployment metadata
+        run: python3 scripts/finalize_deployment.py staging/site
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -246,6 +277,12 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           CHART_PERIOD: ${{ needs.fetch_validate.outputs.chart_period }}
           FETCHED_AT: ${{ needs.fetch_validate.outputs.fetched_at }}
+          SOURCE_URL: ${{ needs.fetch_validate.outputs.source_url }}
+          EXPECTED_PERIOD: ${{ needs.fetch_validate.outputs.expected_period }}
+          LIVE_PERIOD: ${{ needs.fetch_validate.outputs.live_period }}
+          PUBLICATION_STATUS: ${{ needs.fetch_validate.outputs.publication_status }}
+          RELEASE_ACTION: ${{ needs.fetch_validate.outputs.release_action }}
+          MANIFEST_WARNING: ${{ needs.fetch_validate.outputs.manifest_warning }}
           CONFIGURED_COUNT: ${{ needs.fetch_validate.outputs.configured_count }}
           SUCCESSFUL_COUNT: ${{ needs.fetch_validate.outputs.successful_count }}
           FAILED_COUNT: ${{ needs.fetch_validate.outputs.failed_count }}
@@ -266,4 +303,5 @@ jobs:
           RENDER_WARNING_COUNT: ${{ needs.render.outputs.render_warning_count }}
           PAGE_URL: ${{ needs.deploy.outputs.page_url }}
           DEPLOYED_COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 scripts/write_final_summary.py

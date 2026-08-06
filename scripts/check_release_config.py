@@ -11,6 +11,8 @@ required = [
     Path("CNAME"),
     Path("robots.txt"),
     Path("DESCRIPTION"),
+    Path("scripts/publication_gate.py"),
+    Path("scripts/finalize_deployment.py"),
 ]
 missing = [str(path) for path in required if not path.is_file()]
 if missing:
@@ -34,4 +36,14 @@ if len(markets) != 55 or len(set(markets)) != 55:
 if os.environ.get("MUSICCHARTS_TEST_MARKETS", "").strip():
     raise SystemExit("MUSICCHARTS_TEST_MARKETS must not be set in a release run")
 
-print("Release configuration passed: main site, custom domain, and 55 unique markets.")
+workflow = Path(".github/workflows/render-deploy.yml").read_text(encoding="utf-8")
+expected_crons = {'cron: "0 18 * * 5"', 'cron: "0 18 * * 6"'}
+actual_crons = set(re.findall(r'cron:\s*"[^"]+"', workflow))
+if actual_crons != expected_crons:
+    raise SystemExit(f"Unexpected publication schedule: {sorted(actual_crons)}")
+if not re.search(r"(?m)^\s*push:\s*$", workflow) or not re.search(
+    r"(?m)^\s*workflow_dispatch:\s*$", workflow
+):
+    raise SystemExit("The release workflow must preserve push and workflow_dispatch triggers")
+
+print("Release configuration passed: schedule, triggers, main site, custom domain, and 55 unique markets.")

@@ -34,6 +34,7 @@ if (is.null(chart_run)) {
   chart_run <- list(
     chart_period = as.Date(NA),
     fetched_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    source_url = kworb_chart_url("global"),
     coverage = tibble::tibble(
       configured_markets = length(WORLD_MUSIC_WATCH_COUNTRIES),
       successful_markets = 0L,
@@ -75,6 +76,7 @@ report <- list(
   schema_version = "1.0",
   chart_period = if (is.na(chart_run$chart_period)) NA_character_ else as.character(chart_run$chart_period),
   fetched_at = chart_run$fetched_at,
+  source_url = chart_run$source_url,
   coverage = coverage,
   successful_markets = unname(chart_run$successful_markets),
   failed_markets = unname(chart_run$failed_markets),
@@ -101,6 +103,7 @@ write_json(
 
 write_output("chart_period", if (is.na(chart_run$chart_period)) "unknown" else as.character(chart_run$chart_period))
 write_output("fetched_at", chart_run$fetched_at)
+write_output("source_url", chart_run$source_url)
 write_output("configured_count", coverage$configured_markets)
 write_output("successful_count", coverage$successful_markets)
 write_output("failed_count", coverage$failed_markets)
