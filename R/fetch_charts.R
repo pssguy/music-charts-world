@@ -357,6 +357,7 @@ fetch_chart_run <- function(country_codes,
       "%Y-%m-%dT%H:%M:%SZ",
       tz = "UTC"
     ),
+    source_url = global$source_url,
     charts_global = global$data,
     charts = bind_rows(lapply(results[successful], `[[`, "data")),
     results = results,

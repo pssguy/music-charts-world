@@ -38,6 +38,12 @@ stopifnot(grepl("Chart week ending", body_text, fixed = TRUE))
 stopifnot(grepl("not affiliated with or endorsed by Spotify", body_text, fixed = TRUE))
 stopifnot(grepl("Method.", body_text, fixed = TRUE))
 stopifnot(grepl("Source and positioning.", body_text, fixed = TRUE))
+stopifnot(grepl("Publication metadata.", body_text, fixed = TRUE))
+stopifnot(grepl("Chart period:", body_text, fixed = TRUE))
+stopifnot(grepl("Data fetched at:", body_text, fixed = TRUE))
+stopifnot(grepl("Site deployed at:", body_text, fixed = TRUE))
+stopifnot(grepl("Git commit:", body_text, fixed = TRUE))
+stopifnot(grepl("GitHub Actions run:", body_text, fixed = TRUE))
 stopifnot(!grepl("MUSICCHARTS_TEST_MARKETS", body_text, fixed = TRUE))
 
 assert_no_match <- function(values, pattern, label) {
@@ -179,10 +185,10 @@ stopifnot(grepl("https://musiccharts.world/sitemap.xml", robots, fixed = TRUE))
 
 manifest <- read_json(file.path(site_dir, "deployment-manifest.json"), simplifyVector = FALSE)
 manifest_required <- c(
-  "schema_version", "chart_period", "fetched_at", "configured_markets",
+  "schema_version", "chart_period", "fetched_at", "source_url", "configured_markets",
   "successful_markets", "failed_markets", "unavailable_markets", "market_statuses",
   "worldwide_row_count", "site_bytes", "warning_count", "warnings", "validation", "commit", "workflow",
-  "run_id", "run_attempt", "rendered_at", "deployed_at"
+  "run_id", "run_attempt", "run_url", "rendered_at", "deployed_at"
 )
 stopifnot(all(manifest_required %in% names(manifest)))
 stopifnot(identical(manifest$validation$status, "pass"))

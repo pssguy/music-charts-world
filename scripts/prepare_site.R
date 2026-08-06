@@ -55,9 +55,10 @@ if (site_bytes > 100 * 1024^2) {
 }
 
 manifest <- list(
-  schema_version = "1.0",
+  schema_version = "1.1",
   chart_period = as.character(chart_run$chart_period),
   fetched_at = chart_run$fetched_at,
+  source_url = chart_run$source_url,
   configured_markets = unname(chart_run$configured_markets),
   successful_markets = unname(chart_run$successful_markets),
   failed_markets = unname(chart_run$failed_markets),
@@ -75,6 +76,15 @@ manifest <- list(
   workflow = Sys.getenv("GITHUB_WORKFLOW", unset = "local"),
   run_id = Sys.getenv("GITHUB_RUN_ID", unset = "local"),
   run_attempt = Sys.getenv("GITHUB_RUN_ATTEMPT", unset = "1"),
+  run_url = if (nzchar(Sys.getenv("GITHUB_RUN_ID"))) {
+    paste0(
+      Sys.getenv("GITHUB_SERVER_URL", unset = "https://github.com"), "/",
+      Sys.getenv("GITHUB_REPOSITORY", unset = "local"), "/actions/runs/",
+      Sys.getenv("GITHUB_RUN_ID")
+    )
+  } else {
+    "local"
+  },
   rendered_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
   deployed_at = NA_character_
 )
