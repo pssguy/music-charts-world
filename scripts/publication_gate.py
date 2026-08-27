@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 PUBLICATION_TIMEZONE = ZoneInfo("America/Vancouver")
 DEFAULT_MANIFEST_URL = "https://musiccharts.world/deployment-manifest.json"
+FRIDAY_SCHEDULE = "0 22 * * 5"
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ def compare_periods(
     source_url: str,
     manifest_url: str = DEFAULT_MANIFEST_URL,
     manifest_warning: str | None = None,
+    defer_stale_source: bool = False,
 ) -> PublicationDecision:
     common = {
         "fetched_period": fetched_period.isoformat(),
@@ -65,6 +67,17 @@ def compare_periods(
         "manifest_url": manifest_url,
         "warning": manifest_warning,
     }
+    previous_period = expected_period - timedelta(days=7)
+    if (
+        fetched_period == previous_period
+        and defer_stale_source
+        and (live_period is None or fetched_period >= live_period)
+    ):
+        return PublicationDecision(
+            status="publication-deferred",
+            release_action="skip",
+            **common,
+        )
     if fetched_period < expected_period:
         return PublicationDecision(
             status="stale-source",
@@ -133,6 +146,12 @@ def append_summary(decision: PublicationDecision) -> None:
     ]
     if decision.warning:
         lines.append(f"- Warning: {decision.warning}")
+    if decision.status == "publication-deferred":
+        lines += [
+            "",
+            "Publication is deferred because the scheduled Friday source is internally valid but has not yet "
+            "published the newly expected Thursday period. The live site remains unchanged.",
+        ]
     summary = "\n".join(lines) + "\n"
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "").strip()
     if summary_path:
@@ -151,12 +170,18 @@ def parse_run_at(raw: str | None) -> datetime:
     return parsed
 
 
+def is_scheduled_friday(event_name: str, schedule: str) -> bool:
+    return event_name == "schedule" and schedule == FRIDAY_SCHEDULE
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--chart-period", required=True)
     parser.add_argument("--source-url", required=True)
     parser.add_argument("--manifest-url", default=DEFAULT_MANIFEST_URL)
     parser.add_argument("--run-at")
+    parser.add_argument("--event-name", default="")
+    parser.add_argument("--schedule", default="")
     parser.add_argument(
         "--output",
         default=str(Path("staging") / "input" / "publication-decision.json"),
@@ -166,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     fetched_period = date.fromisoformat(args.chart_period)
     expected_period = expected_chart_period(parse_run_at(args.run_at))
     live_period, warning = read_live_period(args.manifest_url)
+    defer_stale_source = is_scheduled_friday(args.event_name, args.schedule)
     decision = compare_periods(
         fetched_period,
         expected_period,
@@ -173,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         source_url=args.source_url,
         manifest_url=args.manifest_url,
         manifest_warning=warning,
+        defer_stale_source=defer_stale_source,
     )
 
     output_path = Path(args.output)

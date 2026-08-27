@@ -2,7 +2,7 @@ name: Validate, Render & Deploy
 
 "on":
   schedule:
-    - cron: "0 18 * * 5"
+    - cron: "0 22 * * 5"
     - cron: "0 18 * * 6"
   push:
     branches: [main]
@@ -53,6 +53,7 @@ jobs:
       critical_failure_count: ${{ steps.fetch.outputs.critical_failure_count }}
       critical_failures: ${{ steps.fetch.outputs.critical_failures }}
       validation_status: ${{ steps.fetch.outputs.validation_status }}
+      validated_artifact_name: ${{ steps.artifact_name.outputs.validated_input }}
     steps:
       - uses: actions/checkout@v6
 
@@ -75,6 +76,8 @@ jobs:
           python3 scripts/publication_gate.py
           --chart-period "${{ steps.fetch.outputs.chart_period }}"
           --source-url "${{ steps.fetch.outputs.source_url }}"
+          --event-name "${{ github.event_name }}"
+          --schedule "${{ github.event.schedule }}"
 
       - name: Upload validation report
         if: ${{ always() }}
@@ -94,24 +97,33 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
 
+      - name: Name validated input artifact
+        id: artifact_name
+        if: ${{ success() && steps.publication_gate.outputs.release_action == 'deploy' }}
+        run: echo "validated_input=validated-input-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
       - name: Upload validated short-lived snapshot
         if: ${{ success() && steps.publication_gate.outputs.release_action == 'deploy' }}
+        id: upload_validated
         uses: actions/upload-artifact@v7
         with:
-          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact_name.outputs.validated_input }}
           path: |
             staging/input/chart-run.rds
             staging/input/validation-report.json
           if-no-files-found: error
           retention-days: 1
 
-  render:
-    name: Render staging site
+  render_primary:
+    name: Render staging site (primary)
     needs: fetch_validate
     if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    continue-on-error: true
     outputs:
+      candidate_ready: ${{ steps.candidate.outputs.ready }}
+      artifact_name: ${{ steps.artifact_name.outputs.site_candidate }}
       site_bytes: ${{ steps.prepare_site.outputs.site_bytes }}
       index_bytes: ${{ steps.prepare_site.outputs.index_bytes }}
       file_count: ${{ steps.prepare_site.outputs.file_count }}
@@ -137,19 +149,17 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.fetch_validate.outputs.validated_artifact_name }}
           path: staging/input
 
       - name: Read previous deployment size when available
         run: python3 scripts/read_previous_site_size.py
 
-      - name: Clean and render staging output
+      - name: Render primary staging output with diagnostics
+        id: render_site
         env:
           MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
-        run: |
-          rm -rf staging/site
-          mkdir -p staging/site
-          quarto render world-music-watch.qmd --output-dir staging/site
+        run: bash scripts/render_attempt.sh primary staging/site
 
       - name: Validate output size and write public manifest
         id: prepare_site
@@ -161,18 +171,150 @@ jobs:
           staging/input/chart-run.rds
           staging/input/validation-report.json
 
-      - name: Upload tested site candidate
+      - name: Name primary site candidate
+        id: artifact_name
+        run: echo "site_candidate=site-candidate-primary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload primary site candidate
+        id: upload_candidate
         uses: actions/upload-artifact@v7
         with:
-          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.artifact_name.outputs.site_candidate }}
           path: staging/site
           if-no-files-found: error
           retention-days: 1
 
+      - name: Mark primary candidate ready
+        id: candidate
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  render_fallback:
+    name: Render staging site (fresh-runner fallback)
+    needs: [fetch_validate, render_primary]
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        needs.fetch_validate.result == 'success' &&
+        needs.fetch_validate.outputs.release_action == 'deploy' &&
+        needs.render_primary.outputs.candidate_ready != 'true'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      candidate_ready: ${{ steps.candidate.outputs.ready }}
+      artifact_name: ${{ steps.artifact_name.outputs.site_candidate }}
+      site_bytes: ${{ steps.prepare_site.outputs.site_bytes }}
+      index_bytes: ${{ steps.prepare_site.outputs.index_bytes }}
+      file_count: ${{ steps.prepare_site.outputs.file_count }}
+      render_warning_count: ${{ steps.prepare_site.outputs.render_warning_count }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: "4.4.0"
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          cache-version: 1
+
+      - name: Remove any pre-installed Quarto to avoid apt downgrade conflicts
+        run: sudo apt-get purge -y quarto || true
+
+      - uses: quarto-dev/quarto-actions/setup@v2.2.0
+        with:
+          version: "1.9.38"
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.fetch_validate.outputs.validated_artifact_name }}
+          path: staging/input
+
+      - name: Read previous deployment size when available
+        run: python3 scripts/read_previous_site_size.py
+
+      - name: Render fallback staging output with diagnostics
+        id: render_site
+        env:
+          MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
+        run: bash scripts/render_attempt.sh fallback staging/site
+
+      - name: Validate output size and write public manifest
+        id: prepare_site
+        env:
+          MUSICCHARTS_VALIDATED_RUN: ${{ github.workspace }}/staging/input/chart-run.rds
+        run: >-
+          Rscript scripts/prepare_site.R
+          staging/site
+          staging/input/chart-run.rds
+          staging/input/validation-report.json
+
+      - name: Name fallback site candidate
+        id: artifact_name
+        run: echo "site_candidate=site-candidate-fallback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload fallback site candidate
+        id: upload_candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact_name.outputs.site_candidate }}
+          path: staging/site
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Mark fallback candidate ready
+        id: candidate
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  render_candidate:
+    name: Select successful render candidate
+    needs: [fetch_validate, render_primary, render_fallback]
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        needs.fetch_validate.result == 'success' &&
+        needs.fetch_validate.outputs.release_action == 'deploy'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      renderer: ${{ steps.select.outputs.renderer }}
+      artifact_name: ${{ steps.select.outputs.artifact_name }}
+      site_bytes: ${{ steps.select.outputs.site_bytes }}
+      index_bytes: ${{ steps.select.outputs.index_bytes }}
+      file_count: ${{ steps.select.outputs.file_count }}
+      render_warning_count: ${{ steps.select.outputs.render_warning_count }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require exactly one successful site candidate
+        id: select
+        run: >-
+          python3 scripts/select_render_candidate.py
+          --primary-ready "${{ needs.render_primary.outputs.candidate_ready }}"
+          --primary-artifact "${{ needs.render_primary.outputs.artifact_name }}"
+          --primary-site-bytes "${{ needs.render_primary.outputs.site_bytes }}"
+          --primary-index-bytes "${{ needs.render_primary.outputs.index_bytes }}"
+          --primary-file-count "${{ needs.render_primary.outputs.file_count }}"
+          --primary-render-warning-count "${{ needs.render_primary.outputs.render_warning_count }}"
+          --fallback-ready "${{ needs.render_fallback.outputs.candidate_ready }}"
+          --fallback-artifact "${{ needs.render_fallback.outputs.artifact_name }}"
+          --fallback-site-bytes "${{ needs.render_fallback.outputs.site_bytes }}"
+          --fallback-index-bytes "${{ needs.render_fallback.outputs.index_bytes }}"
+          --fallback-file-count "${{ needs.render_fallback.outputs.file_count }}"
+          --fallback-render-warning-count "${{ needs.render_fallback.outputs.render_warning_count }}"
+
   test:
     name: Test generated site
-    needs: [fetch_validate, render]
-    if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
+    needs: [fetch_validate, render_candidate]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.fetch_validate.outputs.release_action == 'deploy' &&
+        needs.render_candidate.result == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -189,12 +331,12 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: validated-input-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.fetch_validate.outputs.validated_artifact_name }}
           path: staging/input
 
       - uses: actions/download-artifact@v7
         with:
-          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.render_candidate.outputs.artifact_name }}
           path: staging/site
 
       - name: Run parser and generated-site tests
@@ -223,8 +365,14 @@ jobs:
 
   deploy:
     name: Deploy GitHub Pages
-    needs: [fetch_validate, render, test]
-    if: ${{ success() && needs.fetch_validate.outputs.release_action == 'deploy' }}
+    needs: [fetch_validate, render_candidate, test]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.fetch_validate.outputs.release_action == 'deploy' &&
+        needs.render_candidate.result == 'success' &&
+        needs.test.result == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -241,7 +389,7 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: site-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.render_candidate.outputs.artifact_name }}
           path: staging/site
 
       - name: Finalize public deployment metadata
@@ -262,8 +410,8 @@ jobs:
 
   report:
     name: Publish run summary
-    if: ${{ always() }}
-    needs: [prepare, fetch_validate, render, test, deploy]
+    if: ${{ !cancelled() }}
+    needs: [prepare, fetch_validate, render_primary, render_fallback, render_candidate, test, deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -272,7 +420,12 @@ jobs:
         env:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           FETCH_RESULT: ${{ needs.fetch_validate.result }}
-          RENDER_RESULT: ${{ needs.render.result }}
+          PRIMARY_RENDER_RESULT: ${{ needs.render_primary.result }}
+          PRIMARY_CANDIDATE_READY: ${{ needs.render_primary.outputs.candidate_ready }}
+          FALLBACK_RENDER_RESULT: ${{ needs.render_fallback.result }}
+          FALLBACK_CANDIDATE_READY: ${{ needs.render_fallback.outputs.candidate_ready }}
+          RENDER_CANDIDATE_RESULT: ${{ needs.render_candidate.result }}
+          CANDIDATE_RENDERER: ${{ needs.render_candidate.outputs.renderer }}
           TEST_RESULT: ${{ needs.test.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           CHART_PERIOD: ${{ needs.fetch_validate.outputs.chart_period }}
@@ -297,10 +450,10 @@ jobs:
           CRITICAL_FAILURE_COUNT: ${{ needs.fetch_validate.outputs.critical_failure_count }}
           CRITICAL_FAILURES: ${{ needs.fetch_validate.outputs.critical_failures }}
           VALIDATION_STATUS: ${{ needs.fetch_validate.outputs.validation_status }}
-          SITE_BYTES: ${{ needs.render.outputs.site_bytes }}
-          INDEX_BYTES: ${{ needs.render.outputs.index_bytes }}
-          FILE_COUNT: ${{ needs.render.outputs.file_count }}
-          RENDER_WARNING_COUNT: ${{ needs.render.outputs.render_warning_count }}
+          SITE_BYTES: ${{ needs.render_candidate.outputs.site_bytes }}
+          INDEX_BYTES: ${{ needs.render_candidate.outputs.index_bytes }}
+          FILE_COUNT: ${{ needs.render_candidate.outputs.file_count }}
+          RENDER_WARNING_COUNT: ${{ needs.render_candidate.outputs.render_warning_count }}
           PAGE_URL: ${{ needs.deploy.outputs.page_url }}
           DEPLOYED_COMMIT: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
