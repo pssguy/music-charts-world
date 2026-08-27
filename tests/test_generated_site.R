@@ -149,20 +149,31 @@ if (!is.null(chart_run)) {
 }
 
 track_buttons <- html_elements(page, "button.track-row")
-stopifnot(length(track_buttons) == (successful_count + 1L) * 50L)
+stopifnot(length(track_buttons) == 50L)
 stopifnot(all(html_attr(track_buttons, "type") == "button"))
 stopifnot(all(nzchar(html_attr(track_buttons, "aria-label"))))
 stopifnot(all(html_attr(track_buttons, "aria-pressed") %in% c("true", "false")))
 stopifnot(length(html_elements(page, "li.track-row")) == 0L)
 stopifnot(length(html_elements(page, "iframe:not([title])")) == 0L)
 
+queue_json <- html_text(html_element(page, "#track-queues-data"))
+stopifnot(nzchar(queue_json))
+track_queues <- fromJSON(queue_json, simplifyVector = FALSE)
+stopifnot(length(track_queues) == successful_count + 1L)
+stopifnot(all(vapply(track_queues, length, integer(1)) == 50L))
+stopifnot(all(vapply(
+  unlist(track_queues, recursive = FALSE),
+  function(track) all(c("trackId", "title", "artist", "rank", "change") %in% names(track)),
+  logical(1)
+)))
+
 options <- html_elements(page, "#country-select option")
 panels <- html_elements(page, ".country-panel")
 stopifnot(length(options) == successful_count + 1L)
-stopifnot(length(panels) == successful_count + 1L)
+stopifnot(length(panels) == 1L)
 if (!is.null(chart_run)) {
   stopifnot(setequal(html_attr(options, "value"), c("GLOBAL", chart_run$successful_markets)))
-  stopifnot(setequal(html_attr(panels, "id"), paste0("panel-", c("GLOBAL", chart_run$successful_markets))))
+  stopifnot(setequal(names(track_queues), c("GLOBAL", chart_run$successful_markets)))
 }
 panel_button_counts <- vapply(
   panels,

@@ -7,7 +7,14 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from scripts.finalize_deployment import finalize_site
-from scripts.publication_gate import compare_periods, expected_chart_period, read_live_period
+from scripts.publication_gate import (
+    FRIDAY_SCHEDULE,
+    compare_periods,
+    expected_chart_period,
+    is_scheduled_friday,
+    main as publication_gate_main,
+    read_live_period,
+)
 
 
 SOURCE_URL = "https://kworb.net/spotify/country/global_weekly.html"
@@ -39,17 +46,68 @@ class ExpectedPeriodTests(unittest.TestCase):
 
 
 class PublicationDecisionTests(unittest.TestCase):
-    def decision(self, fetched: str, expected: str, live: str | None):
+    def decision(
+        self,
+        fetched: str,
+        expected: str,
+        live: str | None,
+        *,
+        defer_stale_source: bool = False,
+    ):
         return compare_periods(
             date.fromisoformat(fetched),
             date.fromisoformat(expected),
             date.fromisoformat(live) if live else None,
             source_url=SOURCE_URL,
             manifest_warning="manifest unavailable" if live is None else None,
+            defer_stale_source=defer_stale_source,
         )
 
     def test_stale_chart_rejection(self) -> None:
         decision = self.decision("2026-07-30", "2026-08-06", "2026-07-30")
+        self.assertEqual((decision.status, decision.release_action), ("stale-source", "fail"))
+
+    def test_scheduled_friday_stale_but_valid_is_deferred(self) -> None:
+        decision = self.decision(
+            "2026-07-30",
+            "2026-08-06",
+            "2026-07-30",
+            defer_stale_source=True,
+        )
+        self.assertEqual(
+            (decision.status, decision.release_action),
+            ("publication-deferred", "skip"),
+        )
+
+    def test_saturday_equivalent_remains_failure(self) -> None:
+        decision = self.decision("2026-07-30", "2026-08-06", "2026-07-30")
+        self.assertEqual((decision.status, decision.release_action), ("stale-source", "fail"))
+
+    def test_friday_expected_fresh_period_deploys(self) -> None:
+        decision = self.decision(
+            "2026-08-06",
+            "2026-08-06",
+            "2026-07-30",
+            defer_stale_source=True,
+        )
+        self.assertEqual((decision.status, decision.release_action), ("newer-period", "deploy"))
+
+    def test_friday_deferral_never_allows_older_than_live(self) -> None:
+        decision = self.decision(
+            "2026-07-30",
+            "2026-08-06",
+            "2026-08-06",
+            defer_stale_source=True,
+        )
+        self.assertEqual((decision.status, decision.release_action), ("stale-source", "fail"))
+
+    def test_friday_deferral_rejects_more_than_one_period_stale(self) -> None:
+        decision = self.decision(
+            "2026-07-23",
+            "2026-08-06",
+            "2026-07-23",
+            defer_stale_source=True,
+        )
         self.assertEqual((decision.status, decision.release_action), ("stale-source", "fail"))
 
     def test_same_period_no_op(self) -> None:
@@ -76,6 +134,65 @@ class PublicationDecisionTests(unittest.TestCase):
             live_period, warning = read_live_period("https://example.test/manifest.json")
         self.assertIsNone(live_period)
         self.assertIn("Could not read live deployment manifest", warning)
+
+    def test_only_the_exact_scheduled_friday_trigger_enables_deferral(self) -> None:
+        self.assertTrue(is_scheduled_friday("schedule", FRIDAY_SCHEDULE))
+        self.assertFalse(is_scheduled_friday("schedule", "0 18 * * 6"))
+        self.assertFalse(is_scheduled_friday("workflow_dispatch", FRIDAY_SCHEDULE))
+
+    def test_scheduled_friday_deferred_cli_finishes_successfully(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "scripts.publication_gate.read_live_period",
+            return_value=(date.fromisoformat("2026-07-30"), None),
+        ):
+            output = Path(directory) / "decision.json"
+            exit_code = publication_gate_main(
+                [
+                    "--chart-period",
+                    "2026-07-30",
+                    "--source-url",
+                    SOURCE_URL,
+                    "--run-at",
+                    "2026-08-07T22:00:00Z",
+                    "--event-name",
+                    "schedule",
+                    "--schedule",
+                    FRIDAY_SCHEDULE,
+                    "--output",
+                    str(output),
+                ]
+            )
+            decision = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(decision["status"], "publication-deferred")
+        self.assertEqual(decision["release_action"], "skip")
+
+    def test_scheduled_saturday_stale_cli_remains_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "scripts.publication_gate.read_live_period",
+            return_value=(date.fromisoformat("2026-07-30"), None),
+        ):
+            output = Path(directory) / "decision.json"
+            exit_code = publication_gate_main(
+                [
+                    "--chart-period",
+                    "2026-07-30",
+                    "--source-url",
+                    SOURCE_URL,
+                    "--run-at",
+                    "2026-08-08T18:00:00Z",
+                    "--event-name",
+                    "schedule",
+                    "--schedule",
+                    "0 18 * * 6",
+                    "--output",
+                    str(output),
+                ]
+            )
+            decision = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(decision["status"], "stale-source")
+        self.assertEqual(decision["release_action"], "fail")
 
 
 class FinalizeDeploymentTests(unittest.TestCase):

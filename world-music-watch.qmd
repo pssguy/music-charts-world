@@ -323,50 +323,46 @@ for (i in seq_len(nrow(selectable))) {
   }
 }
 
-esc_js <- function(s) {
-  s <- gsub("\\\\", "\\\\\\\\", s)
-  gsub('"', '\\\\"', s)
+safe_json <- function(value) {
+  json <- jsonlite::toJSON(value, auto_unbox = TRUE, na = "null", null = "null")
+  # A chart title is upstream data. Keep it from terminating the data script.
+  gsub("<", "\\u003c", json, fixed = TRUE)
 }
 
-# --- Define handlers + countryDefaults BEFORE loading the iframe API -------
-cat('<script>\n')
-cat('const countryDefaults = {\n')
-for (d in defaults) {
-  cat(sprintf('  "%s": {trackId: "%s", name: "%s", title: "%s", artist: "%s", flag: "%s"},\n',
-              d$cc, d$trackId,
-              esc_js(d$name), esc_js(d$title), esc_js(d$artist), d$flag))
+queue_tracks <- function(df) {
+  lapply(seq_len(nrow(df)), function(i) {
+    list(
+      trackId = df$track_id[i],
+      title = df$title[i],
+      artist = df$artist[i],
+      rank = as.integer(df$rank[i]),
+      change = if (is.na(df$change[i])) "" else df$change[i]
+    )
+  })
 }
-cat('};\n')
 
-# Build trackQueues: mapping panel code to array of {trackId, title, artist}
-cat('const trackQueues = {\n')
-# Global queue
-cat('  "GLOBAL": [\n')
-for (i in seq_len(nrow(charts_global))) {
-  cat(sprintf('    {trackId: "%s", title: "%s", artist: "%s"},\n',
-              charts_global$track_id[i],
-              esc_js(charts_global$title[i]),
-              esc_js(charts_global$artist[i])))
-}
-cat('  ],\n')
-# Country queues
+country_defaults <- setNames(lapply(defaults, function(d) {
+  list(trackId = d$trackId, name = d$name, title = d$title, artist = d$artist, flag = d$flag)
+}), vapply(defaults, `[[`, character(1), "cc"))
+
+track_queues <- list(GLOBAL = queue_tracks(charts_global))
 for (i in seq_len(nrow(selectable))) {
   cc_i <- selectable$country_code[i]
   panel_data <- charts |> filter(country_code == cc_i) |> arrange(rank)
-  if (nrow(panel_data) > 0) {
-    cat(sprintf('  "%s": [\n', cc_i))
-    for (j in seq_len(nrow(panel_data))) {
-      cat(sprintf('    {trackId: "%s", title: "%s", artist: "%s"},\n',
-                  panel_data$track_id[j],
-                  esc_js(panel_data$title[j]),
-                  esc_js(panel_data$artist[j])))
-    }
-    cat('  ],\n')
-  }
+  if (nrow(panel_data) > 0) track_queues[[cc_i]] <- queue_tracks(panel_data)
 }
-cat('};\n')
 
+# --- Define handlers + countryDefaults BEFORE loading the iframe API -------
+cat('<script type="application/json" id="country-defaults-data">')
+cat(safe_json(country_defaults))
+cat('</script>\n')
+cat('<script type="application/json" id="track-queues-data">')
+cat(safe_json(track_queues))
+cat('</script>\n')
+cat('<script>\n')
 cat('
+const countryDefaults = JSON.parse(document.getElementById("country-defaults-data").textContent);
+const trackQueues = JSON.parse(document.getElementById("track-queues-data").textContent);
 let spotifyController = null;
 let pendingPlayId = null;
 let currentPanelCode = "GLOBAL";
@@ -429,9 +425,97 @@ function stopPoll() {
   if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
 }
 
+function appendMovement(row, change) {
+  const movement = document.createElement("span");
+  movement.className = "track-change";
+  const visible = document.createElement("span");
+  visible.setAttribute("aria-hidden", "true");
+  const hidden = document.createElement("span");
+  hidden.className = "visually-hidden";
+
+  if (!change) {
+    movement.classList.add("blank");
+    hidden.textContent = "Movement unavailable";
+  } else if (change === "=") {
+    movement.classList.add("same");
+    visible.textContent = "\u2014";
+    hidden.textContent = "No change";
+  } else if (change === "NEW") {
+    movement.classList.add("new");
+    visible.textContent = "NEW";
+    hidden.textContent = "New entry";
+  } else if (change === "RE") {
+    movement.classList.add("re");
+    visible.textContent = "RE";
+    hidden.textContent = "Re-entry";
+  } else if (change.startsWith("+")) {
+    movement.classList.add("up");
+    visible.textContent = "\u2191" + change.slice(1);
+    hidden.textContent = "Up " + change.slice(1) + " positions";
+  } else if (change.startsWith("-")) {
+    movement.classList.add("down");
+    visible.textContent = "\u2193" + change.slice(1);
+    hidden.textContent = "Down " + change.slice(1) + " positions";
+  } else {
+    visible.textContent = change;
+  }
+  movement.append(visible, hidden);
+  row.appendChild(movement);
+}
+
+function ensureCountryPanel(code) {
+  let panel = document.getElementById("panel-" + code);
+  if (panel) return panel;
+  const queue = trackQueues[code];
+  const host = document.getElementById("country-panels");
+  if (!host || !queue) return null;
+
+  panel = document.createElement("div");
+  panel.className = "country-panel";
+  panel.id = "panel-" + code;
+  panel.style.display = "none";
+  const list = document.createElement("ol");
+  list.className = "track-list";
+
+  queue.forEach((track) => {
+    const item = document.createElement("li");
+    item.className = "track-list-item";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "track-row";
+    button.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-label", "Play rank " + track.rank + ": " + track.title + " by " + track.artist);
+    button.addEventListener("click", () => playTrack(code, track.trackId, track.rank, button));
+
+    const rank = document.createElement("span");
+    rank.className = "track-rank";
+    rank.textContent = String(track.rank).padStart(2, "0");
+    button.appendChild(rank);
+    appendMovement(button, track.change);
+
+    const meta = document.createElement("span");
+    meta.className = "track-meta";
+    const title = document.createElement("span");
+    title.className = "track-title";
+    title.textContent = track.title;
+    const artist = document.createElement("span");
+    artist.className = "track-artist";
+    artist.textContent = track.artist;
+    meta.append(title, artist);
+    button.appendChild(meta);
+    item.appendChild(button);
+    list.appendChild(item);
+  });
+
+  panel.appendChild(list);
+  host.appendChild(panel);
+  return panel;
+}
+
 function showCountryPanel(code) {
   stopQueue();
   currentPanelCode = code;
+  const panel = ensureCountryPanel(code);
   document.querySelectorAll(".country-panel").forEach(p => {
     p.style.display = (p.id === "panel-" + code) ? "block" : "none";
   });
@@ -441,7 +525,6 @@ function showCountryPanel(code) {
   }
   const flagEl = document.getElementById("selected-flag");
   if (flagEl && def) flagEl.textContent = def.flag;
-  const panel = document.getElementById("panel-" + code);
   if (panel) {
     panel.querySelectorAll(".track-row").forEach(r => {
       r.classList.remove("selected");
@@ -628,17 +711,11 @@ render_chart_panel <- function(df, panel_code) {
   paste0(out, '</ol>\n')
 }
 
+cat('<div id="country-panels">')
 cat('<div class="country-panel" id="panel-GLOBAL" style="display:block;">')
 cat(render_chart_panel(charts_global, "GLOBAL"))
 cat('</div>')
-
-for (i in seq_len(nrow(selectable))) {
-  cc_i <- selectable$country_code[i]
-  panel_data <- charts |> filter(country_code == cc_i) |> arrange(rank)
-  cat(sprintf('<div class="country-panel" id="panel-%s" style="display:none;">', cc_i))
-  cat(render_chart_panel(panel_data, cc_i))
-  cat('</div>')
-}
+cat('</div>')
 
 # --- Load the Spotify iframe API last (handlers already defined) -----------
 cat('<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>\n')

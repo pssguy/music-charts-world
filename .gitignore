@@ -6,3 +6,5 @@
 /*.knit.md
 /index.html
 /staging/
+__pycache__/
+*.py[cod]

@@ -19,26 +19,37 @@ def period_label(raw: str) -> str:
 stages = {
     "Prepare": value("PREPARE_RESULT", "not run"),
     "Fetch, validate, and publication gate": value("FETCH_RESULT", "not run"),
-    "Render": value("RENDER_RESULT", "not run"),
+    "Primary render job": value("PRIMARY_RENDER_RESULT", "not run"),
+    "Fallback render job": value("FALLBACK_RENDER_RESULT", "not run"),
+    "Render candidate gate": value("RENDER_CANDIDATE_RESULT", "not run"),
     "Test": value("TEST_RESULT", "not run"),
     "Deploy": value("DEPLOY_RESULT", "not run"),
 }
+candidate_renderer = value("CANDIDATE_RENDERER")
 failed = [
     name
     for name, result in stages.items()
     if result in {"failure", "cancelled", "timed_out"}
+    and not (name == "Primary render job" and candidate_renderer == "fallback")
 ]
 publication_status = value("PUBLICATION_STATUS")
 release_action = value("RELEASE_ACTION")
 
 if publication_status == "no-new-period":
     outcome = "No new chart period; deployment correctly skipped"
+elif publication_status == "publication-deferred":
+    outcome = "Publication deferred; Friday source has not published the expected period"
 elif publication_status == "stale-source":
     outcome = "Stale source blocked publication"
 elif publication_status == "older-than-live":
     outcome = "Older-than-live chart blocked publication"
 elif stages["Deploy"] == "success":
-    outcome = "Deployment completed"
+    if candidate_renderer == "fallback":
+        outcome = "Deployment completed after fresh-runner render recovery"
+    else:
+        outcome = "Deployment completed"
+elif stages["Render candidate gate"] == "failure":
+    outcome = "No unique successful render candidate; deployment blocked"
 elif failed:
     outcome = f"Stopped at {failed[0]}"
 else:
@@ -82,6 +93,9 @@ lines = [
     "",
     "## Rendered output",
     "",
+    f"- Successful candidate source: {candidate_renderer}",
+    f"- Primary candidate ready: {value('PRIMARY_CANDIDATE_READY', 'false')}",
+    f"- Fallback candidate ready: {value('FALLBACK_CANDIDATE_READY', 'false')}",
     f"- Site bytes: {value('SITE_BYTES')}",
     f"- index.html bytes: {value('INDEX_BYTES')}",
     f"- Files: {value('FILE_COUNT')}",
@@ -102,6 +116,12 @@ elif publication_status == "no-new-period":
     lines += [
         "",
         "The fetched chart period already matches the live manifest. The tested live site remains unchanged.",
+    ]
+elif publication_status == "publication-deferred":
+    lines += [
+        "",
+        "Publication is explicitly deferred because the scheduled Friday source has not yet published the expected Thursday period.",
+        "The fetched data passed structural validation, no deployment ran, and the live site remains unchanged.",
     ]
 else:
     next_action = {
