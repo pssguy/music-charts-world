@@ -318,3 +318,11 @@ h3 {
 .footer-note p { margin-bottom: 12px; max-width: 70ch; }
 .footer-note strong { color: var(--ink); }
 .footer-note a { color: var(--rust-deep); }
+/* Publication coverage remains visible in each analytical view. */
+.coverage-notice {
+  border-left: 4px solid #a55027;
+  background: #f5eadb;
+  color: #3c2a20;
+  padding: 0.8rem 1rem;
+  margin: 1rem 0;
+}

@@ -57,6 +57,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Initialize failure diagnostics before R setup
+        run: python3 scripts/validation_diagnostics.py init
+
       - uses: r-lib/actions/setup-r@v2
         with:
           r-version: "4.4.0"
@@ -68,6 +71,7 @@ jobs:
 
       - name: Fetch source charts and run critical validation
         id: fetch
+        timeout-minutes: 20
         run: Rscript scripts/fetch_validate.R staging/input
 
       - name: Check chart freshness and live deployment period
@@ -79,14 +83,24 @@ jobs:
           --event-name "${{ github.event_name }}"
           --schedule "${{ github.event.schedule }}"
 
+      - name: Preserve source diagnostics and explain skipped publication gate
+        if: ${{ always() }}
+        env:
+          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+          GATE_OUTCOME: ${{ steps.publication_gate.outcome }}
+        run: >-
+          python3 scripts/validation_diagnostics.py finalize
+          --fetch-outcome "$FETCH_OUTCOME"
+          --gate-outcome "$GATE_OUTCOME"
+
       - name: Upload validation report
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: validation-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: staging/input/validation-report.json
-          if-no-files-found: warn
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload publication decision
         if: ${{ always() }}
@@ -94,8 +108,8 @@ jobs:
         with:
           name: publication-decision-${{ github.run_id }}-${{ github.run_attempt }}
           path: staging/input/publication-decision.json
-          if-no-files-found: warn
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Name validated input artifact
         id: artifact_name
@@ -346,6 +360,7 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p 'test_*.py'
           Rscript tests/test_fetch_charts.R
+          Rscript tests/test_source_failures.R
           Rscript tests/test_generated_site.R
 
       - name: Run local HTTP smoke test

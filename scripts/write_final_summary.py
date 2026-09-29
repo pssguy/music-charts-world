@@ -34,6 +34,9 @@ failed = [
 ]
 publication_status = value("PUBLICATION_STATUS")
 release_action = value("RELEASE_ACTION")
+if publication_status == "not available" and stages["Fetch, validate, and publication gate"] != "success":
+    publication_status = "validation-blocked"
+    release_action = "fail"
 
 if publication_status == "no-new-period":
     outcome = "No new chart period; deployment correctly skipped"
@@ -43,6 +46,8 @@ elif publication_status == "stale-source":
     outcome = "Stale source blocked publication"
 elif publication_status == "older-than-live":
     outcome = "Older-than-live chart blocked publication"
+elif publication_status == "unexpected-source-period":
+    outcome = "Unexpected source period blocked publication"
 elif stages["Deploy"] == "success":
     if candidate_renderer == "fallback":
         outcome = "Deployment completed after fresh-runner render recovery"
@@ -72,6 +77,8 @@ lines = [
     "",
     "## Source validation",
     "",
+    "- Coverage policy (india-stale-only-v1): GLOBAL and all other 54 markets are required. Only structurally valid stale India may be unavailable; it contributes no data to calculations or rankings and returns automatically when current and valid.",
+    "- Per-market periods, source URLs, attempts and errors: see the Fetch job summary and validation-report artifact (retained 30 days).",
     f"- Data fetched at: {value('FETCHED_AT')}",
     f"- Configured markets: {value('CONFIGURED_COUNT')}",
     f"- Configured market names: {value('CONFIGURED_NAMES')}",

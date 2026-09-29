@@ -168,12 +168,31 @@ stopifnot(all(vapply(
 )))
 
 options <- html_elements(page, "#country-select option")
+enabled_options <- html_elements(page, "#country-select option:not([disabled])")
 panels <- html_elements(page, ".country-panel")
-stopifnot(length(options) == successful_count + 1L)
+stopifnot(length(options) == configured_count + 1L)
+stopifnot(length(enabled_options) == successful_count + 1L)
 stopifnot(length(panels) == 1L)
 if (!is.null(chart_run)) {
-  stopifnot(setequal(html_attr(options, "value"), c("GLOBAL", chart_run$successful_markets)))
+  stopifnot(setequal(html_attr(enabled_options, "value"), c("GLOBAL", chart_run$successful_markets)))
   stopifnot(setequal(names(track_queues), c("GLOBAL", chart_run$successful_markets)))
+  if ("IN" %in% chart_run$unavailable_markets) {
+    stopifnot(!"IN" %in% names(track_queues), !"IN" %in% chart_run$charts$country_code,
+              nrow(chart_run$results$IN$data) == 0L,
+              length(html_elements(page, '#country-select option[value="IN"][disabled]')) == 1L,
+              all(grepl("India is unavailable", html_text2(html_elements(page, ".coverage-notice")), fixed = TRUE)),
+              grepl("India is excluded from every comparison, calculation, and ranking", body_text, fixed = TRUE))
+    widgets <- lapply(html_text(html_elements(page, 'script[type="application/json"][data-for]')),
+                      fromJSON, simplifyVector = FALSE)
+    traces <- unlist(lapply(widgets, function(widget) widget$x$data), recursive = FALSE)
+    maps <- Filter(function(trace) identical(trace$type, "choropleth"), traces)
+    heatmaps <- Filter(function(trace) identical(trace$type, "heatmap"), traces)
+    stopifnot(length(maps) == 1L, length(heatmaps) == 1L,
+              !"IND" %in% unlist(maps[[1]]$locations),
+              length(maps[[1]]$locations) == successful_count,
+              !"India" %in% unlist(heatmaps[[1]]$x),
+              length(heatmaps[[1]]$x) == successful_count)
+  }
 }
 panel_button_counts <- vapply(
   panels,

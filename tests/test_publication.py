@@ -67,6 +67,12 @@ class PublicationDecisionTests(unittest.TestCase):
         decision = self.decision("2026-07-30", "2026-08-06", "2026-07-30")
         self.assertEqual((decision.status, decision.release_action), ("stale-source", "fail"))
 
+    def test_future_or_non_thursday_period_never_deploys(self) -> None:
+        for period in ("2026-08-13", "2026-08-05", "2026-08-07"):
+            with self.subTest(period=period):
+                decision = self.decision(period, "2026-08-06", "2026-07-30")
+                self.assertEqual((decision.status, decision.release_action), ("unexpected-source-period", "fail"))
+
     def test_scheduled_friday_stale_but_valid_is_deferred(self) -> None:
         decision = self.decision(
             "2026-07-30",

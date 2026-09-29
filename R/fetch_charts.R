@@ -14,8 +14,14 @@ CHART_VALIDATION <- list(
   track_id_pattern = "^[A-Za-z0-9]{22}$",
   fetch_attempts = 3L,
   retry_wait_seconds = 1,
-  request_timeout_seconds = 30L
+  request_timeout_seconds = 30L,
+  period_refresh_rounds = 2L,
+  period_refresh_wait_seconds = 15
 )
+
+# Explicit exception approved for the frozen India source. All other configured
+# markets remain mandatory; this is not a generic percentage threshold.
+CHART_COVERAGE_POLICY <- "india-stale-only-v1: require GLOBAL and all other 54 markets; exclude only structurally valid stale IN; no stale rows; restore IN automatically when current"
 
 # Escape source-provided display text for raw HTML emitted through Quarto.
 # Dollar signs are valid chart content, but Pandoc can otherwise interpret
@@ -49,35 +55,62 @@ extract_kworb_chart_period <- function(page) {
   periods[[1]]
 }
 
-classify_fetch_error <- function(message) {
-  if (str_detect(message, regex("404|not found", ignore_case = TRUE))) {
-    "unavailable"
-  } else {
-    "failed"
-  }
+classify_fetch_error <- function(status_code = NA_integer_) {
+  if (is.na(status_code)) return("temporary_network")
+  if (status_code %in% c(404L, 410L)) return("source_unavailable")
+  if (status_code %in% c(408L, 429L) || status_code >= 500L) return("temporary_network")
+  "http_error"
+}
+
+request_chart <- function(url, timeout_seconds) {
+  curl::curl_fetch_memory(url, handle = curl::new_handle(
+    timeout = timeout_seconds, connecttimeout = timeout_seconds,
+    useragent = "MusicCharts.world validation",
+    httpheader = c("Cache-Control" = "no-cache")
+  ))
 }
 
 fetch_html_with_retry <- function(url,
                                   attempts = CHART_VALIDATION$fetch_attempts,
                                   wait_seconds = CHART_VALIDATION$retry_wait_seconds,
-                                  timeout_seconds = CHART_VALIDATION$request_timeout_seconds) {
-  old_timeout <- getOption("timeout")
-  options(timeout = timeout_seconds)
-  on.exit(options(timeout = old_timeout), add = TRUE)
-
-  last_error <- NULL
+                                  timeout_seconds = CHART_VALIDATION$request_timeout_seconds,
+                                  request = request_chart, sleep = Sys.sleep,
+                                  on_attempt = function(history) NULL) {
+  history <- list()
   for (attempt in seq_len(attempts)) {
-    page <- tryCatch(read_html(url), error = function(e) {
-      last_error <<- conditionMessage(e)
-      NULL
-    })
-    if (!is.null(page)) {
-      return(list(page = page, attempts = attempt, error = NULL))
+    history[[attempt]] <- list(attempt = attempt, source_url = url,
+                              failure_type = "in_progress", error = "Request has not completed.")
+    on_attempt(history)
+    response <- tryCatch(request(url, timeout_seconds), error = identity)
+    status_code <- if (inherits(response, "error")) NA_integer_ else response$status_code
+    failure_type <- NULL
+    error <- NULL
+    page <- NULL
+    if (inherits(response, "error")) {
+      error <- conditionMessage(response)
+      failure_type <- classify_fetch_error()
+    } else if (status_code != 200L) {
+      error <- sprintf("HTTP %d", status_code)
+      failure_type <- classify_fetch_error(status_code)
+    } else {
+      page <- tryCatch(read_html(response$content), error = identity)
+      if (inherits(page, "error")) {
+        error <- conditionMessage(page)
+        failure_type <- "page_structure"
+        page <- NULL
+      }
     }
-    if (attempt < attempts) Sys.sleep(wait_seconds * attempt)
+    history[[attempt]] <- list(
+      attempt = attempt, source_url = url,
+      fetched_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      http_status = status_code, failure_type = failure_type, error = error
+    )
+    on_attempt(history)
+    if (!is.null(page) || !identical(failure_type, "temporary_network")) break
+    if (attempt < attempts) sleep(wait_seconds * 2^(attempt - 1L))
   }
-  if (is.null(last_error)) last_error <- "Unknown fetch error"
-  list(page = NULL, attempts = attempts, error = last_error)
+  list(page = page, attempts = length(history), error = error,
+       failure_type = failure_type, attempt_history = history)
 }
 
 parse_kworb_row <- function(row, country_code, source_url, chart_period,
@@ -182,108 +215,202 @@ validate_chart <- function(data, raw_row_count, parse_failure_count,
 
 fetch_kworb_country <- function(country_code,
                                 top_n = CHART_VALIDATION$displayed_depth,
-                                pause_seconds = 0) {
+                                pause_seconds = 0,
+                                on_attempt = function(history) NULL) {
   source_url <- kworb_chart_url(country_code)
   fetched_at <- format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
-  fetched <- fetch_html_with_retry(source_url)
+  fetched <- fetch_html_with_retry(source_url, on_attempt = on_attempt)
+
+  finish <- function(status, period = as.Date(NA), data = tibble(),
+                     errors = character(), warnings = character(),
+                     failure_type = NULL, parser_failure_rate = NULL) {
+    history <- fetched$attempt_history
+    if (length(history)) {
+      history[[length(history)]]$chart_period <- as.character(period)
+      history[[length(history)]]$failure_type <- failure_type
+      history[[length(history)]]$error <- paste(errors, collapse = "; ")
+    }
+    list(country_code = toupper(country_code), status = status,
+         source_url = source_url, chart_period = period, fetched_at = fetched_at,
+         attempts = fetched$attempts, attempt_history = history, data = data,
+         errors = errors, warnings = warnings, failure_type = failure_type,
+         parser_failure_rate = parser_failure_rate)
+  }
 
   if (is.null(fetched$page)) {
-    return(list(
-      country_code = toupper(country_code),
-      status = classify_fetch_error(fetched$error),
-      source_url = source_url,
-      chart_period = as.Date(NA),
-      fetched_at = fetched_at,
-      attempts = fetched$attempts,
-      data = tibble(),
-      errors = fetched$error,
-      warnings = character()
+    return(finish(
+      if (identical(fetched$failure_type, "source_unavailable")) "unavailable" else "failed",
+      errors = fetched$error, failure_type = fetched$failure_type
     ))
   }
 
-  chart_period <- tryCatch(
-    extract_kworb_chart_period(fetched$page),
-    error = function(e) e
-  )
-  if (inherits(chart_period, "error")) {
-    return(list(
-      country_code = toupper(country_code),
-      status = "failed",
-      source_url = source_url,
-      chart_period = as.Date(NA),
-      fetched_at = fetched_at,
-      attempts = fetched$attempts,
-      data = tibble(),
-      errors = conditionMessage(chart_period),
-      warnings = character()
-    ))
-  }
+  tryCatch({
+    chart_period <- tryCatch(
+      extract_kworb_chart_period(fetched$page),
+      error = function(e) e
+    )
+    if (inherits(chart_period, "error")) {
+      return(finish("failed", errors = conditionMessage(chart_period),
+                    failure_type = "page_structure"))
+    }
 
-  table_node <- html_element(fetched$page, "table.sortable")
-  rows <- if (inherits(table_node, "xml_missing")) {
-    list()
-  } else {
-    html_elements(table_node, "tr")
-  }
-  if (length(rows) < 2L) {
-    return(list(
-      country_code = toupper(country_code),
-      status = "failed",
+    table_node <- html_element(fetched$page, "table.sortable")
+    rows <- if (inherits(table_node, "xml_missing")) {
+      list()
+    } else {
+      html_elements(table_node, "tr")
+    }
+    if (length(rows) < 2L) {
+      return(finish("failed", chart_period, errors = "No chart table rows were found.",
+                    failure_type = "page_structure"))
+    }
+
+    parsed_rows <- lapply(
+      rows[-1],
+      parse_kworb_row,
+      country_code = country_code,
       source_url = source_url,
       chart_period = chart_period,
-      fetched_at = fetched_at,
-      attempts = fetched$attempts,
-      data = tibble(),
-      errors = "No chart table rows were found.",
-      warnings = character()
-    ))
-  }
+      fetched_at = fetched_at
+    )
+    parsed <- bind_rows(parsed_rows)
+    parse_failure_count <- sum(vapply(parsed_rows, is.null, logical(1)))
+    if (!nrow(parsed)) {
+      return(finish("failed", chart_period, errors = "No source rows could be parsed.",
+                    failure_type = "page_structure", parser_failure_rate = 1))
+    }
+    validation <- validate_chart(
+      parsed,
+      raw_row_count = length(rows) - 1L,
+      parse_failure_count = parse_failure_count,
+      top_n = top_n
+    )
 
-  parsed_rows <- lapply(
-    rows[-1],
-    parse_kworb_row,
-    country_code = country_code,
-    source_url = source_url,
-    chart_period = chart_period,
-    fetched_at = fetched_at
-  )
-  parsed <- bind_rows(parsed_rows)
-  parse_failure_count <- sum(vapply(parsed_rows, is.null, logical(1)))
-  validation <- validate_chart(
-    parsed,
-    raw_row_count = length(rows) - 1L,
-    parse_failure_count = parse_failure_count,
-    top_n = top_n
-  )
+    if (pause_seconds > 0) Sys.sleep(pause_seconds)
 
-  if (pause_seconds > 0) Sys.sleep(pause_seconds)
+    finish(
+      if (validation$valid) "success" else "failed",
+      chart_period,
+      data = parsed |>
+        filter(rank <= top_n) |>
+        arrange(rank),
+      errors = validation$errors,
+      warnings = validation$warnings,
+      failure_type = if (validation$valid) NULL else if (parse_failure_count > 0L) "page_structure" else "data_integrity",
+      parser_failure_rate = validation$parser_failure_rate
+    )
+  }, error = function(e) finish("failed", errors = conditionMessage(e),
+                               failure_type = "unexpected_error"))
+}
 
-  list(
-    country_code = toupper(country_code),
-    status = if (validation$valid) "success" else "failed",
-    source_url = source_url,
-    chart_period = chart_period,
-    fetched_at = fetched_at,
-    attempts = fetched$attempts,
-    data = parsed |>
-      filter(rank <= top_n) |>
-      arrange(rank),
-    errors = validation$errors,
-    warnings = validation$warnings,
-    parser_failure_rate = validation$parser_failure_rate
-  )
+pending_chart_result <- function(code) {
+  list(country_code = toupper(code), status = "pending",
+       source_url = kworb_chart_url(code), chart_period = as.Date(NA),
+       fetched_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+       attempts = 0L, attempt_history = list(), data = tibble(),
+       failure_type = "not_completed", errors = "Fetch has not completed.",
+       warnings = character())
 }
 
 fetch_chart_run <- function(country_codes,
                             top_n = CHART_VALIDATION$displayed_depth,
                             pause_seconds = 0.5,
-                            fail_on_error = TRUE) {
-  global <- fetch_kworb_country("global", top_n = top_n)
-  results <- lapply(country_codes, function(code) {
-    message("Fetching ", toupper(code), "...")
-    fetch_kworb_country(code, top_n = top_n, pause_seconds = pause_seconds)
-  })
-  names(results) <- toupper(country_codes)
+                            fail_on_error = TRUE,
+                            refresh_rounds = CHART_VALIDATION$period_refresh_rounds,
+                            refresh_wait = CHART_VALIDATION$period_refresh_wait_seconds,
+                            checkpoint = function(run) NULL,
+                            fetch_country = fetch_kworb_country, sleep = Sys.sleep) {
+  codes <- toupper(country_codes)
+  all_results <- setNames(lapply(c("GLOBAL", codes), pending_chart_result), c("GLOBAL", codes))
+  snapshot <- function(complete = FALSE) {
+    run <- summarize_chart_run(all_results$GLOBAL, all_results[codes], codes, complete)
+    checkpoint(run)
+    run
+  }
+  fetch_one <- function(code) {
+    previous <- all_results[[code]]
+    message("Fetching ", code, " from ", previous$source_url, "...")
+    on_attempt <- function(history) {
+      pending <- previous
+      pending$status <- "pending"
+      pending$failure_type <- "not_completed"
+      pending$errors <- "Source fetch/parse has not completed; see attempt history."
+      pending$attempts <- previous$attempts + length(history)
+      pending$attempt_history <- c(previous$attempt_history, history)
+      all_results[[code]] <<- pending
+      snapshot()
+    }
+    result <- tryCatch(fetch_country(code, top_n = top_n, pause_seconds = pause_seconds,
+                                    on_attempt = on_attempt),
+      error = function(e) {
+        result <- all_results[[code]]
+        result$attempts <- result$attempts - previous$attempts
+        result$attempt_history <- tail(result$attempt_history, result$attempts)
+        result$status <- "failed"
+        result$failure_type <- "unexpected_error"
+        result$errors <- conditionMessage(e)
+        result
+      })
+    result$attempts <- previous$attempts + result$attempts
+    result$attempt_history <- c(previous$attempt_history, result$attempt_history)
+    if (length(result$attempt_history)) {
+      for (i in seq_along(result$attempt_history)) result$attempt_history[[i]]$attempt <- i
+    }
+    all_results[[code]] <<- result
+    message(sprintf("%s: %s; period=%s; attempts=%d; %s",
+                    code, result$status, result$chart_period, result$attempts,
+                    paste(result$errors, collapse = "; ")))
+    snapshot()
+  }
+  snapshot()
+  for (code in names(all_results)) fetch_one(code)
+
+  # Refetch live pages only. Never backdate the worldwide chart or reuse an old
+  # market to make a mixed-period release look complete.
+  mismatched <- function() {
+    global <- all_results$GLOBAL
+    if (global$status != "success") return(character())
+    codes[vapply(all_results[codes], function(x) {
+      x$status == "success" && !is.na(x$chart_period) && x$chart_period != global$chart_period
+    }, logical(1))]
+  }
+  for (round in seq_len(refresh_rounds)) {
+    if (!length(mismatched())) break
+    sleep(refresh_wait)
+    fetch_one("GLOBAL")
+    for (code in mismatched()) fetch_one(code)
+  }
+  run <- snapshot(complete = TRUE)
+  if (fail_on_error && run$validation_status != "pass") {
+    stop(paste(run$critical_failures, collapse = " "), call. = FALSE)
+  }
+  run
+}
+
+summarize_chart_run <- function(global, results, country_codes, complete = TRUE) {
+  excluded <- character()
+  if (global$status == "success") {
+    for (code in names(results)) {
+      result <- results[[code]]
+      if (result$status == "success" && result$chart_period != global$chart_period) {
+        result$status <- "failed"
+        result$failure_type <- if (result$chart_period < global$chart_period) "stale_publication" else "period_ahead"
+        result$errors <- sprintf("Observed period %s; required worldwide period %s (%d days difference).",
+                                 result$chart_period, global$chart_period,
+                                 as.integer(result$chart_period - global$chart_period))
+        if (code == "IN" && result$failure_type == "stale_publication") {
+          result$status <- "unavailable"
+          result$observed_row_count <- nrow(result$data)
+          result$data <- result$data[0, , drop = FALSE]
+          result$warnings <- c(result$warnings, paste0(
+            "India unavailable for ", global$chart_period, "; source still shows ",
+            result$chart_period, ". Excluded from all calculations and rankings; no stale chart reused."))
+          excluded <- c(excluded, code)
+        }
+        results[[code]] <- result
+      }
+    }
+  }
 
   failed <- names(results)[vapply(results, function(x) x$status == "failed", logical(1))]
   unavailable <- names(results)[vapply(results, function(x) x$status == "unavailable", logical(1))]
@@ -293,48 +420,29 @@ fetch_chart_run <- function(country_codes,
   if (global$status != "success") {
     critical_failures <- c(
       critical_failures,
-      paste0("Worldwide chart validation failed: ", paste(global$errors, collapse = "; "))
+      market_failure_detail(global)
     )
   }
   if (length(failed) > 0L) {
-    details <- vapply(results[failed], function(x) paste(x$errors, collapse = "; "), character(1))
     critical_failures <- c(
       critical_failures,
-      paste0(
-        "National chart validation failed: ",
-        paste(sprintf("%s (%s)", failed, details), collapse = "; ")
-      )
+      vapply(results[failed], market_failure_detail, character(1))
     )
   }
-
-  successful_periods <- if (length(successful) > 0L) {
-    unique(as.Date(vapply(
-      results[successful],
-      function(x) as.character(x$chart_period),
-      character(1)
-    )))
-  } else {
-    as.Date(character())
+  blocking_unavailable <- setdiff(unavailable, excluded)
+  if (length(blocking_unavailable)) {
+    critical_failures <- c(critical_failures, vapply(results[blocking_unavailable], market_failure_detail, character(1)))
   }
-  if (length(successful) == 0L) {
-    critical_failures <- c(
-      critical_failures,
-      "No configured national market produced a validated chart."
-    )
-  } else if (
-    global$status == "success" &&
-      (length(successful_periods) != 1L || successful_periods[[1]] != global$chart_period)
-  ) {
-    critical_failures <- c(
-      critical_failures,
-      "Chart periods do not match the verified worldwide chart period."
-    )
+  if (!complete || length(successful) + length(excluded) != length(country_codes)) {
+    critical_failures <- c(critical_failures, sprintf(
+      "Required coverage not met: %d/%d national markets current. Only structurally valid stale India may be excluded.",
+      length(successful), length(country_codes)))
   }
 
   warnings <- c(
     unlist(lapply(c(list(GLOBAL = global), results), `[[`, "warnings"), use.names = FALSE),
     if (length(unavailable) > 0L) {
-      paste0("Source chart unavailable for: ", paste(unavailable, collapse = ", "))
+      paste0("Markets unavailable for this chart period: ", paste(unavailable, collapse = ", "))
     } else {
       character()
     }
@@ -358,6 +466,10 @@ fetch_chart_run <- function(country_codes,
       tz = "UTC"
     ),
     source_url = global$source_url,
+    global_result = global,
+    complete = complete,
+    coverage_policy = CHART_COVERAGE_POLICY,
+    excluded_markets = excluded,
     charts_global = global$data,
     charts = bind_rows(lapply(results[successful], `[[`, "data")),
     results = results,
@@ -372,10 +484,13 @@ fetch_chart_run <- function(country_codes,
     validation_status = if (length(critical_failures) == 0L) "pass" else "fail"
   )
 
-  if (fail_on_error && run$validation_status != "pass") {
-    stop(paste(run$critical_failures, collapse = " "), call. = FALSE)
-  }
   run
+}
+
+market_failure_detail <- function(result) {
+  sprintf("%s [%s] %s; attempts=%d: %s", result$country_code,
+          if (is.null(result$failure_type)) result$status else result$failure_type,
+          result$source_url, result$attempts, paste(result$errors, collapse = "; "))
 }
 
 WORLD_MUSIC_WATCH_COUNTRIES <- c(

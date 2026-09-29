@@ -49,7 +49,7 @@ stopifnot(any(grepl("Duplicate track IDs", duplicate_validation$errors, fixed = 
 # Run-level validation must return a report before it raises, so CI can publish
 # useful failure diagnostics while still blocking the render job.
 real_fetch_kworb_country <- fetch_kworb_country
-fetch_kworb_country <- function(country_code, top_n, pause_seconds = 0) {
+fetch_kworb_country <- function(country_code, top_n, pause_seconds = 0, ...) {
   code <- toupper(country_code)
   status <- if (code == "CA") "failed" else if (code == "GB") "unavailable" else "success"
   list(
@@ -68,7 +68,7 @@ failed_run <- fetch_chart_run(c("us", "ca", "gb"), top_n = 1L, pause_seconds = 0
 stopifnot(identical(failed_run$validation_status, "fail"))
 stopifnot(identical(failed_run$failed_markets, "CA"))
 stopifnot(identical(failed_run$unavailable_markets, "GB"))
-stopifnot(length(failed_run$critical_failures) == 1L)
+stopifnot(length(failed_run$critical_failures) == 3L)
 stopifnot(inherits(
   try(fetch_chart_run(c("us", "ca"), top_n = 1L, pause_seconds = 0), silent = TRUE),
   "try-error"

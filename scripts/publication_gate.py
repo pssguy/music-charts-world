@@ -68,6 +68,12 @@ def compare_periods(
         "warning": manifest_warning,
     }
     previous_period = expected_period - timedelta(days=7)
+    if fetched_period > expected_period or fetched_period.weekday() != 3:
+        return PublicationDecision(
+            status="unexpected-source-period",
+            release_action="fail",
+            **common,
+        )
     if (
         fetched_period == previous_period
         and defer_stale_source

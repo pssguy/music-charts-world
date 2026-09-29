@@ -7,6 +7,7 @@ Description: Reproducible dependencies for fetching, validating, rendering, and 
 License: MIT
 Encoding: UTF-8
 Imports:
+    curl (>= 5.0.0),
     dplyr (>= 1.1.4),
     htmltools (>= 0.5.8),
     htmlwidgets (>= 1.6.4),

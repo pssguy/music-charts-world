@@ -183,6 +183,15 @@ country_info <- tibble::tribble(
 )
 
 n_countries_tracked <- n_distinct(charts$country_code)
+coverage_notice <- if ("IN" %in% chart_run$unavailable_markets) {
+  sprintf(paste0("Reduced coverage: %d of %d national markets. India is unavailable for the chart period %s; ",
+                 "its source still shows %s. India is excluded from every comparison, calculation, and ranking. ",
+                 "No stale chart is reused. It returns automatically once its weekly source is current and valid."),
+          coverage$successful_markets, coverage$configured_markets, chart_period,
+          chart_run$results$IN$chart_period)
+} else {
+  sprintf("Coverage: all %d configured national markets are current and validated.", coverage$configured_markets)
+}
 
 charts <- charts |> left_join(country_info, by = "country_code")
 
@@ -243,6 +252,10 @@ Chart week ending `r paste(format(chart_period, "%B"), as.integer(format(chart_p
 
 ::: {.standfirst}
 MusicCharts.world is an independent weekly exploration of how Spotify charts overlap across countries. Rankings are sourced through Kworb, and the site is not affiliated with or endorsed by Spotify.
+
+::: {.coverage-notice}
+`r coverage_notice`
+:::
 :::
 
 ::: {.panel-tabset}
@@ -252,7 +265,7 @@ MusicCharts.world is an independent weekly exploration of how Spotify charts ove
 ::: {.section-intro}
 Click any country on the map &mdash; or pick from the dropdown &mdash; to see its top 50. Choose a track to play it. Use **Play All** to listen through the full chart in order, or **Shuffle** to randomise.
 
-Coverage for this issue: `r coverage$successful_markets` of `r coverage$configured_markets` configured markets loaded; `r coverage$unavailable_markets` unavailable from the upstream source; `r coverage$failed_markets` failed. Failed validation blocks publication.
+Coverage for this issue: `r coverage$successful_markets` of `r coverage$configured_markets` configured markets loaded; `r coverage$unavailable_markets` unavailable for this period; `r coverage$failed_markets` failed. Unavailable markets have no chart rows and are excluded from the map and rankings.
 :::
 
 ```{r world-map}
@@ -672,6 +685,11 @@ for (i in seq_len(nrow(selectable))) {
               selectable$country_code[i],
               htmlEscape(selectable$country[i])))
 }
+for (code in chart_run$unavailable_markets) {
+  name <- country_info$country[match(code, country_info$country_code)]
+  cat(sprintf('<option value="%s" disabled>%s &mdash; unavailable for %s</option>',
+              code, htmlEscape(name), chart_period))
+}
 cat('</select>')
 cat('</div>')
 
@@ -722,6 +740,10 @@ cat('<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>\
 ```
 
 ## The wider view
+
+::: {.coverage-notice}
+`r coverage_notice`
+:::
 
 ::: {.section-intro}
 Each country's top 50 is compared against every other country's. The matrix below is the *overlap* (Jaccard similarity) between every pair of charts, with countries reordered by hierarchical clustering &mdash; so linguistic and cultural blocs sit as visible squares on the diagonal.
@@ -888,7 +910,7 @@ This issue uses the verified weekly chart period ending `r format(chart_period, 
 
 `r if (length(chart_run$unavailable_markets) == 0) "No configured markets were unavailable from the upstream source for this issue." else paste("Unavailable markets:", paste(country_info$country[match(chart_run$unavailable_markets, country_info$country_code)], collapse = ", "), ".")`
 
-The fetch completed at `r fetch_timestamp`. A source or parser failure is not silently omitted: it stops publication. An upstream 404 is reported here as unavailable and is not treated as a chart with zero entries.
+The fetch completed at `r fetch_timestamp`. The worldwide chart and 54 national markets are required to validate for the same current period. India is checked every run: if its chart is valid but stale, India is visibly unavailable for this period and excluded from all calculations and rankings. It is restored automatically when current and valid. This named exception does not allow failures in other markets or invalid data in India. No older chart is reused.
 
 **Publication metadata.** Chart period: `r as.character(chart_period)`. Data fetched at: `r fetch_timestamp`. Site deployed at: [pending deployment]{#site-deployed-at}. Git commit: `r git_commit`. GitHub Actions run: `r if (github_run_url == "local") github_run_id else paste0("[", github_run_id, "](", github_run_url, ")")`.
 
