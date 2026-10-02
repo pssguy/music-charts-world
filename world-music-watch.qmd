@@ -920,4 +920,6 @@ The fetch completed at `r fetch_timestamp`. The worldwide chart and 54 national 
 **Source and positioning.** Rankings are sourced through [Kworb](https://kworb.net/spotify/), which identifies Spotify Charts as its source. MusicCharts.world is independent and is not affiliated with or endorsed by Spotify. The verified chart period comes from the upstream weekly page; the fetch timestamp is recorded separately. Chart availability depends on that upstream source.
 
 **Identity and limitations.** Spotify track IDs are source identifiers, not guaranteed canonical recording identities. Remasters, reissues, alternate versions, or replacement IDs may be treated separately, while catalog changes may interrupt continuity. Spotify penetration varies by country, and local panels can contain false positives where a track sits just outside the Top 50 elsewhere. Featured-artist text follows the upstream presentation and is not a complete credit record.
+
+A [selfcentred.me](https://selfcentred.me) project.
 :::
