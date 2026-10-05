@@ -127,10 +127,12 @@ if (nzchar(validated_run_path)) {
     stop("The supplied chart snapshot does not match the configured market list.")
   }
 } else {
-  chart_run <- fetch_chart_run(country_codes, top_n = 50)
+  chart_run <- fetch_chart_run(country_codes, top_n = CHART_VALIDATION$displayed_depth)
 }
-charts <- chart_run$charts
-charts_global <- chart_run$charts_global
+# All site consumers (including distinctiveness and overlap) use this Top 50
+# view; the validated run retains the full published chart for weekly history.
+charts <- chart_run$charts |> filter(rank <= CHART_VALIDATION$displayed_depth)
+charts_global <- chart_run$charts_global |> filter(rank <= CHART_VALIDATION$displayed_depth)
 chart_period <- chart_run$chart_period
 fetch_timestamp <- chart_run$fetched_at
 coverage <- chart_run$coverage

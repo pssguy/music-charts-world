@@ -1,11 +1,11 @@
 source("scripts/fetch_validate.R")
 
-fixture_html <- function(period = "2026/09/24", ranks = 1:50, ids = ranks) {
+fixture_html <- function(period = "2026/09/24", ranks = 1:200, ids = ranks) {
   rows <- vapply(seq_along(ranks), function(i) sprintf(
     '<tr><td>%d</td><td>=</td><td><a href="../artist/a.html">Artist</a> - <a href="../track/%022d.html">Title</a></td></tr>',
     ranks[i], ids[i]), character(1))
   paste0('<html><title>Spotify Weekly Chart - Test - ', period,
-         '</title><body><table class="sortable"><tr><th>Pos</th></tr>',
+         '</title><body><table class="sortable"><tr><th>Pos</th><th>P+</th><th>Artist and Title</th></tr>',
          paste(rows, collapse = ""), '</table></body></html>')
 }
 
@@ -46,17 +46,24 @@ test_page <- sub("</body>", "<h1>Spotify Weekly Chart - Test - 2026/09/17</h1></
 stopifnot(fetch_kworb_country("in")$failure_type == "page_structure")
 test_page <- gsub("track/", "changed/", fixture_html(), fixed = TRUE)
 stopifnot(fetch_kworb_country("in")$failure_type == "page_structure")
-test_page <- fixture_html(ids = rep(1L, 50))
+test_page <- fixture_html(ids = rep(1L, 200))
 stopifnot(fetch_kworb_country("in")$failure_type == "data_integrity")
 test_page <- fixture_html(ranks = c(1:49, 49L))
 stopifnot(fetch_kworb_country("in")$failure_type == "data_integrity")
 request_chart <- real_request
 
+result_data <- bind_rows(lapply(html_elements(read_html(fixture_html()), "tr")[-1],
+  parse_kworb_row, country_code = "GLOBAL", source_url = kworb_chart_url("GLOBAL"),
+  chart_period = as.Date("2026-09-24"), fetched_at = "2026-09-25T06:00:00Z"))
 result <- function(code, period = "2026-09-24", status = "success") {
   value <- pending_chart_result(code)
   value$status <- status
   value$chart_period <- as.Date(period)
-  value$data <- tibble(country_code = code, rank = 1:50, track_id = paste0(code, 1:50))
+  value$data <- result_data
+  value$data$country_code <- code
+  value$data$source_url <- value$source_url
+  value$data$chart_period <- value$chart_period
+  value$data$fetched_at <- value$fetched_at
   value$attempts <- 1L
   value$attempt_history <- list(list(attempt = 1L, chart_period = period, http_status = 200L))
   value$errors <- character()
@@ -128,7 +135,10 @@ stopifnot(exit_code == 0L, file.exists(file.path(directory, "chart-run.rds")),
           report$coverage$successful_markets == 54L)
 saved <- readRDS(file.path(directory, "chart-run.rds"))
 stopifnot(!"IN" %in% saved$charts$country_code, nrow(saved$results$IN$data) == 0L,
-          nrow(saved$charts) == 54L * 50L)
+          nrow(saved$charts) == 54L * 200L, nrow(saved$charts_global) == 200L)
+history_folder <- file.path(directory, "history", "chart_period=2026-09-24")
+history_rows <- read.csv(gzfile(file.path(history_folder, "charts.csv.gz")))
+stopifnot(nrow(history_rows) == 55L * 200L, !"IN" %in% history_rows$country_code)
 fetch_kworb_country <- other_stale
 stopifnot(fetch_validate_main(directory) == 1L,
           !file.exists(file.path(directory, "chart-run.rds")))

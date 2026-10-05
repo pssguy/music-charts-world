@@ -114,16 +114,36 @@ fetch_html_with_retry <- function(url,
 }
 
 parse_kworb_row <- function(row, country_code, source_url, chart_period,
-                            fetched_at) {
+                            fetched_at, column_names = NULL) {
   cells <- html_elements(row, "td")
-  if (length(cells) < 3L) return(NULL)
+  if (is.null(column_names)) {
+    table <- html_element(row, xpath = "ancestor::table[1]")
+    column_names <- html_text2(html_elements(table, "th"))
+  }
+  column_names <- str_squish(column_names)
+  cell <- function(name) {
+    index <- match(name, column_names)
+    if (is.na(index) || index > length(cells)) return(NULL)
+    cells[[index]]
+  }
+  cell_text <- function(name) {
+    node <- cell(name)
+    if (is.null(node)) NA_character_ else html_text2(node)
+  }
+  number <- function(name) {
+    # Streams and lifetime totals can exceed R's integer range.
+    value <- str_replace_all(cell_text(name), "[,\\s()]", "")
+    suppressWarnings(as.numeric(str_replace(value, "^x", "")))
+  }
 
-  raw_rank <- html_text2(cells[[1]])
+  raw_rank <- cell_text("Pos")
   rank <- suppressWarnings(as.integer(str_extract(raw_rank, "^\\d+")))
-  raw_change <- html_text2(cells[[2]])
-  raw_artist_title <- html_text2(cells[[3]])
+  raw_change <- cell_text("P+")
+  raw_artist_title <- cell_text("Artist and Title")
+  title_cell <- cell("Artist and Title")
+  if (is.null(title_cell)) return(NULL)
 
-  links <- html_elements(cells[[3]], "a")
+  links <- html_elements(title_cell, "a")
   hrefs <- html_attr(links, "href")
   track_idx <- which(str_detect(hrefs, "track/"))
   artist_idx <- which(str_detect(hrefs, "artist/"))
@@ -143,6 +163,12 @@ parse_kworb_row <- function(row, country_code, source_url, chart_period,
       NA_character_
     },
     change = raw_change,
+    weeks = as.integer(number("Wks")),
+    peak = as.integer(number("Pk")),
+    peak_count = as.integer(number("(x?)")),
+    streams = number("Streams"),
+    streams_change = number("Streams+"),
+    total_streams = number("Total"),
     track_id = track_id,
     track_url = paste0("https://open.spotify.com/track/", track_id),
     source_url = source_url,
@@ -271,7 +297,8 @@ fetch_kworb_country <- function(country_code,
       country_code = country_code,
       source_url = source_url,
       chart_period = chart_period,
-      fetched_at = fetched_at
+      fetched_at = fetched_at,
+      column_names = html_text2(html_elements(table_node, "th"))
     )
     parsed <- bind_rows(parsed_rows)
     parse_failure_count <- sum(vapply(parsed_rows, is.null, logical(1)))
@@ -292,7 +319,6 @@ fetch_kworb_country <- function(country_code,
       if (validation$valid) "success" else "failed",
       chart_period,
       data = parsed |>
-        filter(rank <= top_n) |>
         arrange(rank),
       errors = validation$errors,
       warnings = validation$warnings,
@@ -491,6 +517,56 @@ market_failure_detail <- function(result) {
   sprintf("%s [%s] %s; attempts=%d: %s", result$country_code,
           if (is.null(result$failure_type)) result$status else result$failure_type,
           result$source_url, result$attempts, paste(result$errors, collapse = "; "))
+}
+
+write_chart_history <- function(run, history_dir = "history") {
+  if (!identical(run$validation_status, "pass") || !isTRUE(run$complete) ||
+      !identical(run$global_result$status, "success") ||
+      length(run$chart_period) != 1L || is.na(run$chart_period)) {
+    stop("Only a complete, validated chart run can be stored in history.")
+  }
+  period <- as.character(run$chart_period)
+  if (!grepl("^\\d{4}-\\d{2}-\\d{2}$", period)) stop("Invalid history chart period.")
+  destination <- file.path(history_dir, paste0("chart_period=", period))
+  # Preserve the first validated snapshot for a week, including its timestamps.
+  if (dir.exists(destination)) return(invisible(destination))
+
+  results <- c(list(GLOBAL = run$global_result), run$results)
+  current <- Filter(function(x) identical(x$status, "success") &&
+                      identical(as.character(x$chart_period), period) &&
+                      !x$country_code %in% run$excluded_markets, results)
+  columns <- c("chart_period", "fetched_at", "country_code", "rank", "change",
+               "track_id", "title", "artist", "raw_artist_title", "weeks",
+               "peak", "peak_count", "streams", "streams_change", "total_streams")
+  charts <- bind_rows(lapply(current, `[[`, "data")) |>
+    select(all_of(columns)) |>
+    arrange(country_code, rank)
+  markets <- bind_rows(lapply(results, function(result) tibble(
+    chart_period = period,
+    fetched_at = result$fetched_at,
+    country_code = result$country_code,
+    status = result$status,
+    observed_chart_period = as.character(result$chart_period),
+    excluded = result$country_code %in% run$excluded_markets,
+    row_count = if (result$country_code %in% names(current)) nrow(result$data) else 0L,
+    source_url = result$source_url,
+    attempts = result$attempts,
+    failure_type = if (is.null(result$failure_type)) NA_character_ else result$failure_type,
+    errors = paste(result$errors, collapse = "; "),
+    warnings = paste(result$warnings, collapse = "; ")
+  )))
+
+  dir.create(history_dir, recursive = TRUE, showWarnings = FALSE)
+  temporary <- tempfile(".chart-history-", tmpdir = history_dir)
+  dir.create(temporary)
+  on.exit(unlink(temporary, recursive = TRUE), add = TRUE)
+  connection <- gzfile(file.path(temporary, "charts.csv.gz"), "wt")
+  tryCatch(write.csv(charts, connection, row.names = FALSE, na = ""),
+           finally = close(connection))
+  write.csv(markets, file.path(temporary, "markets.csv"), row.names = FALSE, na = "")
+  # Publish both files together; an interrupted write cannot leave a partial week.
+  if (!file.rename(temporary, destination)) stop("Could not publish chart history folder.")
+  invisible(destination)
 }
 
 WORLD_MUSIC_WATCH_COUNTRIES <- c(
