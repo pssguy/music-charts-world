@@ -91,11 +91,11 @@ class DiagnosticPreservationTests(unittest.TestCase):
 class WorkflowDiagnosticTests(unittest.TestCase):
     def test_report_survives_failure_without_allowing_render(self):
         workflow = Path(".github/workflows/render-deploy.yml").read_text(encoding="utf-8")
-        fetch = workflow.split("  fetch_validate:")[1].split("  render_primary:")[0]
+        fetch = workflow.split("  fetch_validate:")[1].split("  store_history:")[0]
         self.assertLess(fetch.index("validation_diagnostics.py init"), fetch.index("setup-r@"))
         self.assertLess(fetch.index("validation_diagnostics.py finalize"), fetch.index("Upload validation report"))
         self.assertEqual(fetch.count("if: ${{ always() }}"), 3)
-        self.assertEqual(fetch.count("retention-days: 30"), 2)
+        self.assertEqual(fetch.count("retention-days: 30"), 3)
         self.assertNotIn("if-no-files-found: warn", fetch)
         self.assertNotIn("continue-on-error", fetch)
         self.assertIn("timeout-minutes: 20", fetch)

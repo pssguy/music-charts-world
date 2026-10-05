@@ -67,14 +67,16 @@ fetch_validate_main <- function(output_dir) {
   write_output("warning_messages", paste(chart_run$warnings, collapse = " | "))
   write_output("critical_failure_count", length(chart_run$critical_failures))
   write_output("critical_failures", paste(chart_run$critical_failures, collapse = " | "))
-  write_output("validation_status", chart_run$validation_status)
 
   if (chart_run$validation_status != "pass") {
+    write_output("validation_status", "fail")
     message(paste(chart_run$critical_failures, collapse = "\n"))
     return(1L)
   }
 
   saveRDS(chart_run, file.path(output_dir, "chart-run.rds"), compress = "xz")
+  write_chart_history(chart_run, file.path(output_dir, "history"))
+  write_output("validation_status", "pass")
   cat(sprintf("Validation passed under india-stale-only-v1: %d/%d current markets; unavailable: %s.\n",
               coverage$successful_markets, coverage$configured_markets,
               paste(chart_run$unavailable_markets, collapse = ", ")))

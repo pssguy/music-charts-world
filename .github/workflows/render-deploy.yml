@@ -54,6 +54,7 @@ jobs:
       critical_failures: ${{ steps.fetch.outputs.critical_failures }}
       validation_status: ${{ steps.fetch.outputs.validation_status }}
       validated_artifact_name: ${{ steps.artifact_name.outputs.validated_input }}
+      history_artifact_name: chart-history-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v6
 
@@ -73,6 +74,15 @@ jobs:
         id: fetch
         timeout-minutes: 20
         run: Rscript scripts/fetch_validate.R staging/input
+
+      - name: Upload validated weekly history independently of deployment
+        if: ${{ always() && steps.fetch.outcome == 'success' && steps.fetch.outputs.validation_status == 'pass' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: chart-history-${{ github.run_id }}-${{ github.run_attempt }}
+          path: staging/input/history/
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Check chart freshness and live deployment period
         id: publication_gate
@@ -127,6 +137,68 @@ jobs:
             staging/input/validation-report.json
           if-no-files-found: error
           retention-days: 1
+
+  store_history:
+    name: Preserve validated weekly history
+    needs: fetch_validate
+    if: ${{ always() && !cancelled() && needs.fetch_validate.outputs.validation_status == 'pass' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: chart-history-data
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: history-store
+
+      - name: Check out data branch or initialize its orphan history
+        working-directory: history-store
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --heads origin refs/heads/data; then
+            git fetch --no-tags origin refs/heads/data:refs/remotes/origin/data
+            git checkout -B data refs/remotes/origin/data
+          else
+            status=$?
+            # Exit 2 means the branch is absent; authentication/network errors fail.
+            if [ "$status" -ne 2 ]; then exit "$status"; fi
+            git checkout --orphan data
+            git rm -rf -- .
+          fi
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.fetch_validate.outputs.history_artifact_name }}
+          path: incoming-history
+
+      - name: Commit the first snapshot of this period to data only
+        working-directory: history-store
+        shell: bash
+        env:
+          CHART_PERIOD: ${{ needs.fetch_validate.outputs.chart_period }}
+        run: |
+          [[ "$CHART_PERIOD" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+          test "$(git branch --show-current)" = data
+          folder="history/chart_period=$CHART_PERIOD"
+          if [ -d "$folder" ]; then
+            echo "History already exists for $CHART_PERIOD; preserving the first snapshot."
+            exit 0
+          fi
+          source_folder="$GITHUB_WORKSPACE/incoming-history/chart_period=$CHART_PERIOD"
+          test -s "$source_folder/charts.csv.gz"
+          test -s "$source_folder/markets.csv"
+          mkdir -p history
+          cp -R "$source_folder" "$folder"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$folder"
+          git commit -m "Store weekly chart history for $CHART_PERIOD"
+          # This cannot retrigger this workflow: push only watches main, and
+          # pushes authenticated with GITHUB_TOKEN do not trigger new push runs.
+          git push origin HEAD:refs/heads/data
 
   render_primary:
     name: Render staging site (primary)
