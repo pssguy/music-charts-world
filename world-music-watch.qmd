@@ -253,7 +253,7 @@ Chart week ending `r paste(format(chart_period, "%B"), as.integer(format(chart_p
 ## What the world is listening to, [and where it disagrees.]{.italic-rust}
 
 ::: {.standfirst}
-MusicCharts.world is an independent weekly exploration of how Spotify charts overlap across countries. Rankings are sourced through Kworb, and the site is not affiliated with or endorsed by Spotify.
+MusicCharts.world is an independent weekly exploration of how Spotify charts overlap across countries. Rankings are sourced through [Kworb](https://kworb.net), and the site is not affiliated with or endorsed by Spotify.
 
 ::: {.coverage-notice}
 `r coverage_notice`
@@ -319,6 +319,15 @@ selectable <- country_info |>
   filter(country_code %in% unique(charts$country_code)) |>
   arrange(country)
 
+render_chart_source <- function(country_code, country_name) {
+  sprintf(
+    '<p class="chart-source">Source: <a href="%s">Kworb</a>, Spotify weekly chart for %s, week ending %s</p>\n',
+    escape_chart_text(kworb_chart_url(country_code), attribute = TRUE),
+    escape_chart_text(country_name),
+    escape_chart_text(as.character(chart_period))
+  )
+}
+
 # --- Build the countryDefaults JS object (for player initialisation) -------
 build_default <- function(cc, name, df) {
   list(cc = cc, name = name,
@@ -357,7 +366,8 @@ queue_tracks <- function(df) {
 }
 
 country_defaults <- setNames(lapply(defaults, function(d) {
-  list(trackId = d$trackId, name = d$name, title = d$title, artist = d$artist, flag = d$flag)
+  list(trackId = d$trackId, name = d$name, title = d$title, artist = d$artist, flag = d$flag,
+       sourceHtml = render_chart_source(d$cc, d$name))
 }), vapply(defaults, `[[`, character(1), "cc"))
 
 track_queues <- list(GLOBAL = queue_tracks(charts_global))
@@ -523,6 +533,7 @@ function ensureCountryPanel(code) {
   });
 
   panel.appendChild(list);
+  panel.insertAdjacentHTML("beforeend", countryDefaults[code].sourceHtml);
   host.appendChild(panel);
   return panel;
 }
@@ -734,6 +745,7 @@ render_chart_panel <- function(df, panel_code) {
 cat('<div id="country-panels">')
 cat('<div class="country-panel" id="panel-GLOBAL" style="display:block;">')
 cat(render_chart_panel(charts_global, "GLOBAL"))
+cat(render_chart_source("GLOBAL", "Worldwide"))
 cat('</div>')
 cat('</div>')
 
@@ -922,6 +934,8 @@ The fetch completed at `r fetch_timestamp`. The worldwide chart and 54 national 
 **Source and positioning.** Rankings are sourced through [Kworb](https://kworb.net/spotify/), which identifies Spotify Charts as its source. MusicCharts.world is independent and is not affiliated with or endorsed by Spotify. The verified chart period comes from the upstream weekly page; the fetch timestamp is recorded separately. Chart availability depends on that upstream source.
 
 **Identity and limitations.** Spotify track IDs are source identifiers, not guaranteed canonical recording identities. Remasters, reissues, alternate versions, or replacement IDs may be treated separately, while catalog changes may interrupt continuity. Spotify penetration varies by country, and local panels can contain false positives where a track sits just outside the Top 50 elsewhere. Featured-artist text follows the upstream presentation and is not a complete credit record.
+
+Chart data is Spotify weekly chart data published by Kworb (kworb.net). MusicCharts.world is not affiliated with or endorsed by Kworb or Spotify.
 
 A [selfcentred.me](https://selfcentred.me) project.
 :::
